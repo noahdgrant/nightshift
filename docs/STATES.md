@@ -6,7 +6,7 @@ What `ns run`, `ns auto` and `ns log --json` print is described, event by event 
 
 A unit's `status:` label on the forge says where it is, and only `ns` changes it.
 
-`ns auto` holds a per-repository lock, so a second one refuses at once, and every run that took it ends by writing the night's summary file (see the README, "Run it overnight"). It never resumes a unit. A unit that is `stuck` is labeled `status:stuck`, so a human looks at it first and resumes it with `ns run <unit>`.
+`ns auto` holds a per-repository lock, so a second one refuses at once, and every run that took it ends by writing the night's summary file (see the README, "Run it overnight"). The file gives the night's tokens by kind and, on a `Tokens:` line under each unit, the unit's, over the sessions that unit's run kept, not earlier nights'. It never resumes a unit. A unit that is `stuck` is labeled `status:stuck`, so a human looks at it first and resumes it with `ns run <unit>`.
 
 ```mermaid
 stateDiagram
@@ -46,6 +46,7 @@ stateDiagram
 - `change_request.checks`, for an open change request: `{"state":"passing"}`, `{"state":"pending"}` (also when no check is reported yet) or `{"state":"failing","failing":[names]}`.
 - `stopped`, for a unit whose last move is to `stuck`: `{"reason":..,"state":..}`, the reason (`failed`, `went_wrong`, `inconclusive` or `base_moved`) and the state it was stuck in.
 - `needs`, for a unit that waits for a person and whose workspace exists: `{"review":[..]}` names each file of an open change request that matches `[merge] human_review` or touches a human-review region, as `ship` words it; `{"unproven":[..]}` lists the Must requirements the last verification left unproven, for a unit stuck as `inconclusive`. A unit that waits for another reason (hardware, credentials, a decision) has no `needs`, because `ns` does not know what the person must do.
+- `tokens`: the totals of `input`, `output`, `cache_read` and `cache_write` over the unit's kept sessions, which are the sessions that have ended (a running session is kept when it ends), kept apart and never summed; `known` and `unknown` count the sessions whose tokens could be read and those whose could not, which are left out of every total and never counted as zero; and `by_state`, the same for each state (`build`, `verify`, `review`, `retrospective` and the rest). With no known session the four totals are absent.
 - `artifacts`, when the workspace exists: the paths of `build.md`, the latest `verify-<n>.md` and the latest `review-<n>.md`, each when it exists.
 - `findings`, when a verification or a review has run: `verification` counts the requirements the latest verification found FAIL or INCONCLUSIVE, and `review` counts, per session, the findings of the latest review (each ends in a `Fix level:` line). `--findings` adds `text` with the findings themselves.
 

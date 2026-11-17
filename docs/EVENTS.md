@@ -170,6 +170,7 @@ Printed after each unit `ns auto` ran, whether it finished or not.
 | `ok` | `boolean` | Whether the run ended without an error. |
 | `status` | `array` | The unit's `status:` labels on the forge when it ended. |
 | `change_request` | `string or null` | The URL of the unit's change request; `null` when it has none. |
+| `tokens` | `object` | The night's running total after this unit: `input`, `output`, `cache_read` and `cache_write`, kept apart and never summed, over the sessions kept so far in the night, `known` and `unknown` (sessions whose tokens cannot be read, left out of the totals). With no known session the four totals are absent. |
 | `error` | `string or null` | What went wrong; `null` when `ok`. |
 
 ## `ns log --json`

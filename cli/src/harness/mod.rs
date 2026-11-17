@@ -142,6 +142,16 @@ pub struct Tokens {
     pub cache_write: u64,
 }
 
+impl std::ops::AddAssign for Tokens {
+    /// Adds each kind to its own kind; the four are never summed together.
+    fn add_assign(&mut self, other: Tokens) {
+        self.input += other.input;
+        self.output += other.output;
+        self.cache_read += other.cache_read;
+        self.cache_write += other.cache_write;
+    }
+}
+
 impl Tokens {
     /// Input plus output: the figure a unit's cost is counted in. Cache reads and writes are not in it.
     pub fn billable(&self) -> u64 {
