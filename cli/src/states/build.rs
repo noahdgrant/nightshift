@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{bail, Context as _, Result};
 
 use super::verdict::{self, Verdict};
-use super::{session_run, Context, BUILT_SNAPSHOT};
+use super::{session_run, Context, Done, BUILT_SNAPSHOT};
 use crate::artifact;
 use crate::checks;
 use crate::forge::Unit;
@@ -21,7 +21,7 @@ const PROBLEM: &str = "build.problem";
 /// hold the workspace to. The harness owns the commit and its message. `build` only makes sure
 /// nothing is left uncommitted and the branch holds one commit; a build that did not goes wrong,
 /// and its next run is told what.
-pub fn run(ctx: &mut Context) -> Result<Outcome> {
+pub fn run(ctx: &mut Context) -> Result<Done> {
     let dir = ctx
         .workspace
         .as_ref()
@@ -54,7 +54,12 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
             resume: None,
         },
     )?;
-    artifact::write(&dir, &id, "build.md", &reply.text)?;
+    let summary = artifact::write(&dir, &id, "build.md", &reply.text)?;
+    let done = |outcome| {
+        let mut done = Done::from(outcome);
+        done.facts.artifact = Some(summary.clone());
+        done
+    };
     if !reply.success {
         bail!("the harness did not finish the build");
     }
@@ -66,7 +71,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
         let n = ctx.vcs.workspace_commits_count(&dir, &base)?;
         if n > 1 {
             if let Some(outcome) = squash(ctx, &root, &dir, &id, &reply, n)? {
-                return Ok(outcome);
+                return Ok(done(outcome));
             }
         }
     }
@@ -94,7 +99,7 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     artifact::remove(&dir, &id, PROBLEM)?;
     let snapshot = ctx.vcs.workspace_snapshot(&dir)?;
     artifact::write(&dir, &id, BUILT_SNAPSHOT, &snapshot)?;
-    Ok(Outcome::Pass)
+    Ok(done(Outcome::Pass))
 }
 
 /// Has the build's own session, resumed, squash the `n` commits it left into one. That is not an

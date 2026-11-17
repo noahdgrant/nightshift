@@ -55,7 +55,7 @@ When you are told your last check went wrong, undo what you changed first, then 
 
 ## 5. End with the verdict
 
-Write the evidence: one section per requirement. Then write the section `## Workarounds`, always present, before the verdict line. List each instruction, doc, skill step or command that was wrong, out of date or missing, and what you did instead, one line each, so someone can fix it. When there was none, write the single word `None`. It counts when you tried what an instruction said and it did not work (a command that does not exist, a wrong path, a stale doc), or when you had to find out for yourself what no instruction told you (where to run the checks, which port is free). A failing check of the unit or an ordinary mistake of yours does not count.
+Write the evidence: one section per requirement, a `### R<n>` heading and then a line that starts with its verdict (`PASS`, `FAIL` or `INCONCLUSIVE`). `ns` counts as findings the sections whose verdict is FAIL or INCONCLUSIVE, and reports that number. Then write the section `## Workarounds`, always present, before the verdict line. List each instruction, doc, skill step or command that was wrong, out of date or missing, and what you did instead, one line each, so someone can fix it. When there was none, write the single word `None`. It counts when you tried what an instruction said and it did not work (a command that does not exist, a wrong path, a stale doc), or when you had to find out for yourself what no instruction told you (where to run the checks, which port is free). A failing check of the unit or an ordinary mistake of yours does not count.
 
 End with a last line that is exactly one of:
 

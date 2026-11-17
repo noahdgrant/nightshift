@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result};
 
 use super::rounds::Rounds;
 use super::verdict::{self, Verdict, FAIL_LINE, PASS_LINE};
-use super::{check, Context};
+use super::{check, findings, Context, Done, Facts, SessionVerdict};
 use crate::artifact;
 use crate::manifest::{self, Place};
 use crate::runlog::RunLog;
@@ -88,7 +88,7 @@ pub(super) const SECTION: &str = "# Review session: ";
 /// Has the harness review the unit's changes, in one, three or six sessions one after another. They
 /// read the change and change nothing. See [`check::run`] for how a session ends; a review fails
 /// when any session fails, and goes wrong when any session does.
-pub fn run(ctx: &mut Context) -> Result<Outcome> {
+pub fn run(ctx: &mut Context) -> Result<Done> {
     let dir = ctx
         .workspace
         .as_ref()
@@ -144,9 +144,32 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
     // A review asks for only PASS and FAIL; any other verdict does not let the unit ship.
     let text = merge(&kept, passed);
     artifact::write(&dir, &id, "evidence.md", &text)?;
-    reviews.keep(&text)?;
+    let path = reviews.keep(&text)?;
     artifact::write(&dir, &id, HEAD_FILE, &head)?;
-    Ok(if passed { Outcome::Pass } else { Outcome::Fail })
+    Ok(Done {
+        outcome: if passed { Outcome::Pass } else { Outcome::Fail },
+        facts: facts(&kept, &text, &path),
+    })
+}
+
+/// The facts of a review: the merged `verdict`, the `findings` of every session added up, the
+/// `artifact` and a `sessions` entry with the name and verdict of each session.
+fn facts(sessions: &[(&Focus, String)], merged: &str, artifact: &std::path::Path) -> Facts {
+    let found = findings::review(merged)
+        .iter()
+        .map(|s| s.findings.len())
+        .sum();
+    let mut facts = Facts::check(verdict::parse(merged), found, artifact);
+    facts.sessions = Some(
+        sessions
+            .iter()
+            .map(|(focus, text)| SessionVerdict {
+                name: focus.name.to_string(),
+                verdict: super::reported(verdict::parse(text)),
+            })
+            .collect(),
+    );
+    facts
 }
 
 /// The commit the last review saw, kept with the unit's other notes.
@@ -316,6 +339,48 @@ mod tests {
 
     fn names(sessions: u32) -> Vec<&'static str> {
         focuses(sessions).iter().map(|f| f.name).collect()
+    }
+
+    #[test]
+    fn a_review_reports_the_merged_verdict_the_findings_and_each_sessions_verdict() {
+        let found = "- a.rs:1\n- Fix level: code\n- Durable fix: a type\n\n- b.rs:2\n- Fix level: prose\nVERDICT: FAIL";
+        let kept: Vec<(&Focus, String)> = vec![
+            (&GROUPS[0], found.to_string()),
+            (&GROUPS[1], "fine\nVERDICT: PASS".to_string()),
+            (&GROUPS[2], "fine\nVERDICT: PASS".to_string()),
+        ];
+        let text = merge(&kept, false);
+        let facts = facts(&kept, &text, std::path::Path::new("/w/.ns/7/review-1.md"));
+        assert_eq!(
+            {
+                let mut event = serde_json::json!({});
+                facts.onto(&mut event);
+                event
+            },
+            serde_json::json!({
+                "verdict": "FAIL",
+                "findings": 2,
+                "artifact": "/w/.ns/7/review-1.md",
+                "sessions": [
+                    {"name": "Behavior", "verdict": "FAIL"},
+                    {"name": "Requirements and tests", "verdict": "PASS"},
+                    {"name": "Maintainability", "verdict": "PASS"},
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn a_session_that_ends_in_error_has_no_verdict_in_its_entry() {
+        let kept: Vec<(&Focus, String)> = vec![(&GROUPS[0], "broke\nVERDICT: ERROR".to_string())];
+        let facts = facts(
+            &kept,
+            "VERDICT: FAIL",
+            std::path::Path::new("/w/.ns/7/review-1.md"),
+        );
+        let mut event = serde_json::json!({});
+        facts.onto(&mut event);
+        assert_eq!(event["sessions"], serde_json::json!([{"name": "Behavior"}]));
     }
 
     #[test]

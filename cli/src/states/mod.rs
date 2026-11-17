@@ -68,17 +68,103 @@ impl Context {
     }
 }
 
+/// What a state produced besides its outcome, as fields of the event of the move out of it. A
+/// state sets only the facts it has, and only these fields can ride on an event.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Facts {
+    /// How a check ended.
+    pub verdict: Option<verdict::Verdict>,
+    /// How many findings a check made.
+    pub findings: Option<usize>,
+    /// The path in the workspace of the notes the state kept.
+    pub artifact: Option<std::path::PathBuf>,
+    /// The name and verdict of each review session.
+    pub sessions: Option<Vec<SessionVerdict>>,
+}
+
+/// How one review session ended.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionVerdict {
+    pub name: String,
+    pub verdict: Option<verdict::Verdict>,
+}
+
+/// The verdict an event may carry: `PASS`, `FAIL` or `INCONCLUSIVE`. A harness can write
+/// `VERDICT: ERROR` itself, and that word never reaches an event.
+pub(crate) fn reported(verdict: Option<verdict::Verdict>) -> Option<verdict::Verdict> {
+    verdict.filter(|v| *v != verdict::Verdict::Error)
+}
+
+impl Facts {
+    /// The facts of a check: its `verdict` when the evidence has one, its `findings` count and
+    /// the path of the `artifact` it kept.
+    pub(crate) fn check(
+        verdict: Option<verdict::Verdict>,
+        findings: usize,
+        artifact: &std::path::Path,
+    ) -> Facts {
+        Facts {
+            verdict: reported(verdict),
+            findings: Some(findings),
+            artifact: Some(artifact.to_path_buf()),
+            sessions: None,
+        }
+    }
+
+    /// Adds the facts that are set to `event`, an object, as fields. The one place the names of
+    /// the fields are spelled, and no other field of the event is touched.
+    pub fn onto(&self, event: &mut serde_json::Value) {
+        if let Some(v) = &self.verdict {
+            event["verdict"] = v.word().into();
+        }
+        if let Some(n) = self.findings {
+            event["findings"] = n.into();
+        }
+        if let Some(path) = &self.artifact {
+            event["artifact"] = path.display().to_string().into();
+        }
+        if let Some(sessions) = &self.sessions {
+            event["sessions"] = sessions
+                .iter()
+                .map(|s| {
+                    let mut entry = serde_json::json!({ "name": s.name });
+                    if let Some(v) = &s.verdict {
+                        entry["verdict"] = v.word().into();
+                    }
+                    entry
+                })
+                .collect::<Vec<_>>()
+                .into();
+        }
+    }
+}
+
+/// How a state ended and the facts it left.
+pub struct Done {
+    pub outcome: Outcome,
+    pub facts: Facts,
+}
+
+impl From<Outcome> for Done {
+    fn from(outcome: Outcome) -> Self {
+        Done {
+            outcome,
+            facts: Facts::default(),
+        }
+    }
+}
+
 /// Runs one state. `Err` means the state itself went wrong, which `Outcome::Redo` repeats.
-pub fn run(ctx: &mut Context, state: State) -> Result<Outcome> {
+pub fn run(ctx: &mut Context, state: State) -> Result<Done> {
     match state {
-        State::Setup => setup::run(ctx),
+        State::Setup => setup::run(ctx).map(Done::from),
         State::Build => build::run(ctx),
         State::Verify => verify::run(ctx),
         State::Review => review::run(ctx),
-        State::Ship => ship::run(ctx),
-        State::Retrospective => retrospective::run(ctx),
-        State::CleanUp => clean_up::run(ctx),
-        _ => Ok(Outcome::Pass),
+        State::Ship => ship::run(ctx).map(Done::from),
+        State::Retrospective => retrospective::run(ctx).map(Done::from),
+        State::CleanUp => clean_up::run(ctx).map(Done::from),
+        _ => Ok(Outcome::Pass.into()),
     }
 }
 
@@ -116,6 +202,22 @@ pub(crate) fn session_run(ctx: &Context, state: State, task: &Task) -> Result<Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_error_verdict_adds_no_verdict_field() {
+        let facts = Facts::check(
+            Some(verdict::Verdict::Error),
+            0,
+            std::path::Path::new("a.md"),
+        );
+        let mut event = serde_json::json!({"unit": "u"});
+        facts.onto(&mut event);
+        assert_eq!(
+            event,
+            serde_json::json!({"unit": "u", "findings": 0, "artifact": "a.md"})
+        );
+    }
+
     use crate::harness::UsageLimit;
     use crate::os::Finished;
     use chrono::TimeZone;

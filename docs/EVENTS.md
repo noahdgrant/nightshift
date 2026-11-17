@@ -41,6 +41,10 @@ Printed when a unit moves from one state to another, and also written to the run
 | `attempt` | `number` | Which attempt of `from` just ended. Only on a move that is not to the next state. |
 | `reason` | `string` | Why the move is not to the next state: `failed`, `went_wrong`, `inconclusive`, `base_moved`, or a sentence when a stuck unit goes back to `build` because nothing changed since the check failed. Only on a move that is not to the next state. |
 | `model` | `string or null` | The model the session of `from` used; `null` is the harness's own. Only on a move out of `build`, `verify` or `review`. |
+| `verdict` | `string` | `PASS`, `FAIL` or `INCONCLUSIVE`, as the state judged. Only on a move out of `verify` or `review`, and on the `waiting` event after it. Left out when the evidence has none of these three, for example `ERROR`. |
+| `findings` | `number` | The findings the state counted, summed over review sessions. On every move out of `verify` or `review`, with or without `verdict`. |
+| `artifact` | `string` | The path in the workspace of the notes the state kept: `verify-<n>.md`, `review-<n>.md` or `build.md`. Only on a move out of `build`, `verify` or `review`. |
+| `sessions` | `array` | One `{"name":..,"verdict":..}` for each review session; a session's `verdict` is left out when its evidence has none of the three, for example `ERROR`. Only on a move out of `review`. |
 | `evidence` | `string` | The text of `evidence.md`, why the refresh failed. Only on the move from `done` back to `build` that a failed refresh causes. |
 
 ### `ns run: waiting`
@@ -51,6 +55,10 @@ Printed when the run stops before a state because gates ask it to (the default),
 |---|---|---|
 | `unit` | `string` | The unit's number. |
 | `waiting` | `string` | The state the unit waits to run. |
+| `verdict` | `string` | Repeated from the move just before, when it had it. |
+| `findings` | `number` | Repeated from the move just before, when it had it. |
+| `artifact` | `string` | Repeated from the move just before, when it had it. |
+| `sessions` | `array` | Repeated from the move just before, when it had it. |
 
 ### `ns run: took_over`
 

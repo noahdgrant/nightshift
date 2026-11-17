@@ -4565,3 +4565,128 @@ fn ns_log_shows_the_retrospectives_session() {
     let text = String::from_utf8(out.get_output().stdout.clone()).unwrap();
     assert!(text.starts_with("== retrospective 1 ("), "{text}");
 }
+
+/// Every event `ns run` printed, parsed.
+fn events(out: Vec<u8>) -> Vec<serde_json::Value> {
+    String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+/// The event of the move out of `from`, the first time.
+fn move_out_of(events: &[serde_json::Value], from: &str) -> serde_json::Value {
+    events
+        .iter()
+        .find(|e| e["from"] == from)
+        .unwrap_or_else(|| panic!("no move out of {from}: {events:?}"))
+        .clone()
+}
+
+#[test]
+fn the_move_out_of_verify_carries_its_verdict_findings_and_artifact() {
+    for (first, verdict, findings) in [
+        ("### R1\nPASS: ok\nVERDICT: PASS", "PASS", 0),
+        (
+            "### R1\nPASS: ok\n\n### R2\nFAIL: no\nVERDICT: FAIL",
+            "FAIL",
+            1,
+        ),
+        (UNPROVEN, "INCONCLUSIVE", 1),
+    ] {
+        let repo = Repo::new();
+        let fakes = Fakes {
+            first_verdict: Box::leak(first.to_string().into_boxed_str()),
+            ..Fakes::passing()
+        };
+        let out = run(&repo, &tools(&repo, &fakes))
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let event = move_out_of(&events(out), "verify");
+        assert_eq!(event["verdict"], verdict);
+        assert_eq!(event["findings"], findings);
+        assert_eq!(
+            event["artifact"].as_str().unwrap(),
+            repo.workspace("5")
+                .join(".ns/5/verify-1.md")
+                .to_str()
+                .unwrap()
+        );
+    }
+}
+
+#[test]
+fn the_move_out_of_build_carries_only_the_artifact_and_setup_and_ship_carry_nothing() {
+    let repo = Repo::new();
+    let out = run(&repo, &tools(&repo, &Fakes::passing()))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let events = events(out);
+    let build = move_out_of(&events, "build");
+    assert!(build["artifact"]
+        .as_str()
+        .unwrap()
+        .ends_with(".ns/5/build.md"));
+    assert!(build.get("verdict").is_none() && build.get("findings").is_none());
+    for from in ["setup", "ship"] {
+        let event = move_out_of(&events, from);
+        for field in ["verdict", "findings", "artifact", "sessions"] {
+            assert!(event.get(field).is_none(), "{from}: {event}");
+        }
+    }
+}
+
+#[test]
+fn the_move_out_of_review_names_each_session_and_its_verdict() {
+    let repo = Repo::new();
+    let fakes = Fakes {
+        review_fails_in: "Maintainability",
+        ..Fakes::passing()
+    };
+    // The review fails every time, so the unit ends stuck and `ns` exits 1.
+    let out = run(&repo, &tools(&repo, &fakes))
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let event = move_out_of(&events(out), "review");
+    assert_eq!(event["verdict"], "FAIL");
+    assert_eq!(event["findings"], 0);
+    assert!(event["artifact"]
+        .as_str()
+        .unwrap()
+        .ends_with(".ns/5/review-1.md"));
+    assert_eq!(
+        event["sessions"],
+        serde_json::json!([
+            {"name": "Behavior", "verdict": "PASS"},
+            {"name": "Requirements and tests", "verdict": "PASS"},
+            {"name": "Maintainability", "verdict": "FAIL"},
+        ])
+    );
+}
+
+#[test]
+fn the_waiting_event_at_a_gate_repeats_the_facts_of_the_move_before_it() {
+    let repo = Repo::new();
+    let path = tools(&repo, &Fakes::passing());
+    run_args(&repo, &path, &["run", "5", "--ci-poll-seconds", "0"]).success();
+    run_args(&repo, &path, &["run", "5", "--ci-poll-seconds", "0"]).success();
+    let out = run_args(&repo, &path, &["run", "5", "--ci-poll-seconds", "0"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let events = events(out);
+    let verify = move_out_of(&events, "verify");
+    let waiting = events.iter().find(|e| e.get("waiting").is_some()).unwrap();
+    assert_eq!(waiting["waiting"], "review");
+    for field in ["verdict", "findings", "artifact"] {
+        assert_eq!(waiting[field], verify[field], "{field}");
+    }
+}

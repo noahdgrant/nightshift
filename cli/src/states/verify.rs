@@ -4,7 +4,7 @@ use std::path::Path;
 
 use super::rounds::Rounds;
 use super::verdict::{self, Verdict, INCONCLUSIVE_LINE};
-use super::{check, Context};
+use super::{check, findings, Context, Done};
 use crate::artifact;
 use crate::manifest::Place;
 use crate::skill;
@@ -14,7 +14,7 @@ use crate::state::{Outcome, State};
 /// [`check::run`] for how it ends. Every verification is kept as `verify-<n>.md`, and one after a
 /// failing or inconclusive verification is shown that one. A verification that is inconclusive
 /// right after an inconclusive one leaves the unit unprovable, so it is stuck.
-pub fn run(ctx: &mut Context) -> Result<Outcome> {
+pub fn run(ctx: &mut Context) -> Result<Done> {
     let dir = ctx
         .workspace
         .as_ref()
@@ -35,13 +35,20 @@ pub fn run(ctx: &mut Context) -> Result<Outcome> {
         prompt(&skill, &unit.title, &unit.body, &build, previous.as_deref()),
     )?;
     let text = artifact::read(&dir, &id, "evidence.md")?;
-    verifications.keep(&text)?;
+    let kept = verifications.keep(&text)?;
     let again = previous
         .as_deref()
         .is_some_and(|p| verdict::parse(p) == Some(Verdict::Inconclusive));
-    Ok(match outcome {
-        Outcome::Inconclusive if again => Outcome::Unprovable,
-        other => other,
+    Ok(Done {
+        outcome: match outcome {
+            Outcome::Inconclusive if again => Outcome::Unprovable,
+            other => other,
+        },
+        facts: super::Facts::check(
+            verdict::parse(&text),
+            findings::verification(&text).len(),
+            &kept,
+        ),
     })
 }
 

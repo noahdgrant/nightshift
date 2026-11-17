@@ -177,6 +177,13 @@ fn run_scenarios() -> Vec<Vec<Seen>> {
         "run",
         run_args(&repo, &path, &["run", "5", "--ci-poll-seconds", "0"]),
     ));
+    // Each run goes one state further: the gates after build, verify and review.
+    for _ in 0..3 {
+        all.push(run_out(
+            "run",
+            run_args(&repo, &path, &["run", "5", "--ci-poll-seconds", "0"]),
+        ));
+    }
     // Taken over once a person has opened the change request; and once it has merged.
     let repo = Repo::new();
     manifest_set(&repo, "[merge]\nhuman_review = [\".github/**\"]\n");

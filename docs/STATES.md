@@ -91,6 +91,15 @@ stateDiagram
     stuck --> [*]
 ```
 
+Each move is one line of JSON, `{"unit":..,"from":..,"to":..,"to_attempt":..}`, and a state that produced facts adds them to the move out of it, so a parent session at a gate decides from the stream without opening files:
+
+- `verdict`, `findings` and `artifact` on the move out of `verify` and out of `review`. `verdict` is `PASS`, `FAIL` or `INCONCLUSIVE` (a harness verdict of `ERROR` adds no `verdict` field). `findings` counts the requirement sections the verification found FAIL or INCONCLUSIVE, and for a review the findings of every session added up (one for each `Fix level:` line). `artifact` is the path in the workspace of the notes the state kept: `verify-<n>.md` or `review-<n>.md`.
+- `sessions` on the move out of `review`: one `{"name":..,"verdict":..}` for each review session, so a gate shows which area failed.
+- `artifact` alone on the move out of `build`: the path of `build.md`, the build summary. A build has no verdict or findings.
+- The `waiting` event printed at a gate with `--gates stop` repeats the `verdict`, `findings`, `artifact` and `sessions` of the move just before it.
+
+A state with no such fact (`setup`, `ship`, `retrospective`, `clean_up`) adds no field, and its `waiting` event is only `{"unit":..,"waiting":..}`. The facts are printed and not written to the run log, so `ns log`, `ns status` and the night's summary read the same lines as before; every name and field printed before is unchanged.
+
 A usage limit on the harness lasts hours, so it is not a state going wrong: it never costs an attempt and never labels a unit `status:stuck`. When the harness says when the limit resets, `ns run` and `ns auto` print that they are waiting and until when, wait, and make the call again in the same state. When the reset is after the `--until` time of `ns auto`, or the reply gives no reset time that can be read, the run stops with the unit as it was (its status label given back, nothing logged) and says why; `ns auto` then stops cleanly with `{"stopped":"usage_limit"}`, and it does not count toward the units in a row that went wrong. Triage and troubleshooting in `ns auto` do not wait: a usage limit there stops the night the same way. A 429 or "rate limit" that is not a usage limit is still repeated after 2 and then 4 seconds.
 
 A build that leaves several commits on the branch is not sent back. `ns` resumes the build's own session and tells it to squash them into one commit with a message that summarises all of them; that costs no attempt, and the run log records `"squash":"squashed"` or `"squash":"unresumable"` with the commit count. When the session cannot be resumed (no session id, or the harness fails), the unit is `stuck` with the reason `went_wrong`. A squash that still leaves several commits fails the build as any other, and spends an attempt.
