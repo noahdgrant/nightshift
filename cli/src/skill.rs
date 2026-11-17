@@ -212,6 +212,42 @@ mod tests {
     }
 
     #[test]
+    fn the_architecture_design_skill_is_short_may_start_on_its_own_and_states_each_rule() {
+        let text = embedded()
+            .iter()
+            .find(|(n, _)| *n == "ns-architecture-design")
+            .unwrap()
+            .1;
+        assert!(text.lines().count() <= 60);
+        assert!(
+            !file_for_session("ns-architecture-design", text).contains("disable-model-invocation")
+        );
+        for needed in [
+            "## Trodden path",
+            "## Industry-standard tools",
+            "## Testable seams",
+            "## Harness-friendly layout",
+            "One way per need",
+            "**Assumptions**",
+            "A new dependency",
+            "A **seam**",
+            "`.nightshift/check`",
+            "Fix at the highest layer",
+        ] {
+            assert!(text.contains(needed), "{needed}");
+        }
+    }
+
+    #[test]
+    fn design_build_and_review_name_the_architecture_design_skill() {
+        for name in [DESIGN_DOC, BUILD, REVIEW] {
+            let file = format!("{}/../skills/{name}/SKILL.md", env!("CARGO_MANIFEST_DIR"));
+            let skill = std::fs::read_to_string(file).unwrap();
+            assert!(skill.contains("`ns-architecture-design`"), "{name}");
+        }
+    }
+
+    #[test]
     fn the_whiteboard_defence_skill_is_short_may_start_on_its_own_and_answers_from_the_record() {
         let text = embedded()
             .iter()
