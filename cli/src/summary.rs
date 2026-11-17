@@ -6,6 +6,7 @@ use chrono::NaiveDate;
 use crate::runlog::Move;
 use crate::state::State;
 use crate::status;
+use crate::token_totals::Sum;
 
 /// What the summary file is called, for a person told where to look.
 pub const NAME_PATTERN: &str = "night-YYYY-MM-DD.md";
@@ -27,6 +28,8 @@ pub enum Run {
 pub struct Ended {
     pub unit: u64,
     pub run: Run,
+    /// The tokens of the sessions this run kept.
+    pub tokens: Sum,
 }
 
 /// Where a unit ended up. Only the outcomes that need a person carry a reason.
@@ -41,6 +44,8 @@ pub enum Outcome {
 pub struct Entry {
     pub unit: u64,
     pub outcome: Outcome,
+    /// The tokens of the sessions the unit's run kept.
+    pub tokens: Sum,
 }
 
 /// Where a unit that `ns auto` ran ended up. `labels` are its labels on the forge now, or why they
@@ -51,6 +56,7 @@ pub fn entry_find(
     labels: Result<&[String], &str>,
     last_move: Option<&Move>,
     run: &Run,
+    tokens: Sum,
 ) -> Entry {
     let error = match run {
         Run::Failed(e) => Some(e.as_str()),
@@ -63,6 +69,7 @@ pub fn entry_find(
             return Entry {
                 unit,
                 outcome: Outcome::Stuck(reason),
+                tokens,
             };
         }
     };
@@ -89,7 +96,11 @@ pub fn entry_find(
     } else {
         Outcome::Merged
     };
-    Entry { unit, outcome }
+    Entry {
+        unit,
+        outcome,
+        tokens,
+    }
 }
 
 /// The file's text. `stopped` is why the night ended before the units ran out, if it did.
@@ -102,14 +113,22 @@ pub fn render(date: NaiveDate, entries: &[Entry], stopped: Option<&str>) -> Stri
         text.push_str("\nNo unit was ready to run.\n");
         return text;
     }
+    let mut night = Sum::default();
+    for e in entries {
+        night.merge(&e.tokens);
+    }
+    text.push_str(&format!("\nTokens of the night: {}\n", night.text()));
     let mut merged = Vec::new();
     let mut waiting = Vec::new();
     let mut stuck = Vec::new();
     for e in entries {
+        let tokens = e.tokens.text();
         match &e.outcome {
-            Outcome::Merged => merged.push(format!("- #{}\n", e.unit)),
-            Outcome::Waiting(r) => waiting.push(format!("- #{}: {r}\n", e.unit)),
-            Outcome::Stuck(r) => stuck.push(format!("- #{}: {r}\n", e.unit)),
+            Outcome::Merged => merged.push(format!("- #{}\n  Tokens: {tokens}\n", e.unit)),
+            Outcome::Waiting(r) => {
+                waiting.push(format!("- #{}: {r}\n  Tokens: {tokens}\n", e.unit))
+            }
+            Outcome::Stuck(r) => stuck.push(format!("- #{}: {r}\n  Tokens: {tokens}\n", e.unit)),
         }
     }
     let sections = [
@@ -151,24 +170,42 @@ mod tests {
         );
     }
 
+    fn sum(known: usize, unknown: usize, t: [u64; 4]) -> Sum {
+        let tokens = crate::harness::Tokens {
+            input: t[0],
+            output: t[1],
+            cache_read: t[2],
+            cache_write: t[3],
+        };
+        Sum {
+            tokens,
+            known,
+            unknown,
+        }
+    }
+
     #[test]
-    fn a_night_with_units_lists_each_with_its_reason() {
+    fn a_night_with_units_lists_each_with_its_reason_and_tokens() {
         let entries = [
             Entry {
                 unit: 4,
                 outcome: Outcome::Merged,
+                tokens: sum(1, 0, [1, 2, 3, 4]),
             },
             Entry {
                 unit: 7,
                 outcome: Outcome::Waiting("a person merges it".into()),
+                tokens: sum(0, 1, [0; 4]),
             },
             Entry {
                 unit: 9,
                 outcome: Outcome::Stuck("boom".into()),
+                tokens: sum(1, 1, [100, 200, 300, 400]),
             },
             Entry {
                 unit: 11,
                 outcome: Outcome::Merged,
+                tokens: sum(2, 0, [10, 20, 30, 40]),
             },
         ];
         assert_eq!(
@@ -177,18 +214,20 @@ mod tests {
              \n\
              Stopped early: 2 units in a row went wrong\n\
              \n\
+             Tokens of the night: input 111, output 222, cache_read 333, cache_write 444, 2 unreadable and left out\n\
+             \n\
              ## Merged\n\
              \n\
-             - #4\n\
-             - #11\n\
+             - #4\n  Tokens: input 1, output 2, cache_read 3, cache_write 4\n\
+             - #11\n  Tokens: input 10, output 20, cache_read 30, cache_write 40\n\
              \n\
              ## Waiting for a human\n\
              \n\
-             - #7: a person merges it\n\
+             - #7: a person merges it\n  Tokens: no tokens known, 1 unreadable and left out\n\
              \n\
              ## Stuck\n\
              \n\
-             - #9: boom\n"
+             - #9: boom\n  Tokens: input 100, output 200, cache_read 300, cache_write 400, 1 unreadable and left out\n"
         );
     }
 
@@ -197,6 +236,7 @@ mod tests {
         let entries = [Entry {
             unit: 4,
             outcome: Outcome::Merged,
+            tokens: Sum::default(),
         }];
         let text = render(date(), &entries, None);
         assert!(text.contains("## Waiting for a human\n\nNone\n"), "{text}");
@@ -204,7 +244,7 @@ mod tests {
     }
 
     fn find(labels: &[&str], last_move: Option<&Move>, run: &Run) -> Outcome {
-        entry_find(1, Ok(&labels_of(labels)), last_move, run).outcome
+        entry_find(1, Ok(&labels_of(labels)), last_move, run, Sum::default()).outcome
     }
 
     fn labels_of(l: &[&str]) -> Vec<String> {
@@ -251,7 +291,7 @@ mod tests {
 
     #[test]
     fn a_unit_whose_labels_could_not_be_read_is_stuck_and_never_merged() {
-        let e = entry_find(5, Err("rate limited"), None, &Run::Done);
+        let e = entry_find(5, Err("rate limited"), None, &Run::Done, Sum::default());
         assert_eq!(
             e.outcome,
             Outcome::Stuck("its labels could not be read from the forge: rate limited".into())

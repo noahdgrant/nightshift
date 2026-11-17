@@ -743,3 +743,66 @@ fn a_unit_whose_checks_never_ran_has_no_findings() {
     let out = detail_in(&repo, &[unit(7, &[])], &[], "", "[]");
     assert!(out.get("findings").is_none(), "{out}");
 }
+
+/// A kept `claude` session of unit 7 whose one message used these tokens.
+fn keep_session(repo: &Repo, name: &str, usage: Option<(u64, u64, u64, u64)>) {
+    let dir = repo.path.join(".git/ns/transcripts/7");
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = match usage {
+        Some((i, o, r, w)) => format!(
+            r#"{{"type":"assistant","message":{{"id":"a","usage":{{"input_tokens":{i},"output_tokens":{o},"cache_read_input_tokens":{r},"cache_creation_input_tokens":{w}}},"content":[]}}}}"#
+        ),
+        None => r#"{"type":"result","result":"x"}"#.to_string(),
+    };
+    std::fs::write(dir.join(name), text).unwrap();
+}
+
+fn tokens_of_7(repo: &Repo) -> Value {
+    let out = run_ns(
+        repo,
+        &[unit(7, &["status:in-progress"])],
+        &[],
+        "",
+        "[]",
+        &["status", "7"],
+    )
+    .success();
+    serde_json::from_slice::<Value>(&out.get_output().stdout).unwrap()["tokens"].clone()
+}
+
+#[test]
+fn a_unit_shows_four_separate_totals_by_kind_and_by_state_and_counts_unreadable_sessions() {
+    let repo = Repo::new();
+    keep_session(&repo, "build-1.jsonl", Some((1, 2, 3, 4)));
+    keep_session(&repo, "build-2.jsonl", Some((10, 20, 30, 40)));
+    keep_session(&repo, "verify-1.jsonl", None);
+    assert_eq!(
+        tokens_of_7(&repo),
+        json!({
+            "known": 2, "unknown": 1,
+            "input": 11, "output": 22, "cache_read": 33, "cache_write": 44,
+            "by_state": {
+                "build": {"known": 2, "unknown": 0, "input": 11, "output": 22, "cache_read": 33, "cache_write": 44},
+                "verify": {"known": 0, "unknown": 1},
+            }
+        })
+    );
+}
+
+#[test]
+fn a_running_unit_shows_the_sessions_kept_so_far_and_a_session_kept_later_adds_to_it() {
+    let repo = Repo::new();
+    keep_session(&repo, "build-1.jsonl", Some((1, 2, 3, 4)));
+    assert_eq!(tokens_of_7(&repo)["input"], 1);
+    keep_session(&repo, "verify-1.jsonl", Some((5, 0, 0, 0)));
+    assert_eq!(tokens_of_7(&repo)["input"], 6);
+}
+
+#[test]
+fn a_unit_with_no_kept_session_has_no_totals_and_zero_known() {
+    let repo = Repo::new();
+    assert_eq!(
+        tokens_of_7(&repo),
+        json!({"known": 0, "unknown": 0, "by_state": {}})
+    );
+}

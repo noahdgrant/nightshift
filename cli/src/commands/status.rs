@@ -6,8 +6,9 @@ use crate::forge::{ChangeState, Checks, Forge, Unit};
 use crate::runlog::RunLog;
 use crate::state::State;
 use crate::states::{self, findings, ship};
+use crate::transcripts::Transcripts;
 use crate::vcs::Vcs;
-use crate::{artifact, auto, forge, lock, manifest, status, vcs, workspace};
+use crate::{artifact, auto, forge, harness, lock, manifest, status, token_totals, vcs, workspace};
 
 /// Whether `unit_describe` asks the forge for the change request's checks, which the list skips.
 #[derive(Clone, Copy, PartialEq)]
@@ -154,8 +155,9 @@ fn unit_describe(
 
 /// One unit in full: what `unit_describe` gives, with the attempt it is in out of the most a state
 /// may have, why it stopped when it is stuck, what a person must do when the unit waits for one,
-/// the paths of its artifacts, and how many findings the checks made (their text with
-/// `text`). What needs the unit's workspace is left out when the workspace is gone.
+/// the tokens of its kept sessions, the paths of its artifacts, and how many findings the checks
+/// made (their text with `text`). What needs the unit's workspace is left out when the workspace
+/// is gone.
 fn unit_detail(
     forge: &dyn Forge,
     vcs: &dyn Vcs,
@@ -169,6 +171,9 @@ fn unit_detail(
     let mut described = unit_describe(forge, vcs, log, root, queue, unit, ChecksRead::Read)?;
     described["attempt"] = json!(log.attempt(&id)?);
     described["max_attempts"] = manifest::max_attempts_read(root)?.into();
+    // Only the sessions kept so far: the one running is kept when it ends.
+    let kept = Transcripts::open(vcs, root)?.sessions(&id)?;
+    described["tokens"] = token_totals::read(&*harness::get(), &kept).json();
     let last = log.last_move(&id)?;
     let stuck = last.filter(|m| m.to == State::Stuck);
     if let Some(m) = &stuck {

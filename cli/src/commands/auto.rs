@@ -17,6 +17,8 @@ use crate::notify::{self, Facts, Move as Notice};
 use crate::os::Os;
 use crate::runlog::{Move, Reason, RunLog};
 use crate::state::State;
+use crate::token_totals::{self, Sum};
+use crate::transcripts::Session;
 use crate::transcripts::Transcripts;
 use crate::{auto, config, forge, harness, lock, manifest, os, summary, until, vcs, workspace};
 
@@ -160,6 +162,62 @@ fn stopped_find(
     ran.as_ref().err().map(|e| format!("{e:#}"))
 }
 
+/// The line `ns auto` prints after a unit: how it ended and the night's running total, to which
+/// `tokens`, the unit's own, is added first. A unit whose sessions are all unreadable adds nothing
+/// to the kinds.
+fn unit_line(
+    unit: u64,
+    ended: &Result<()>,
+    night: &mut Sum,
+    tokens: &Sum,
+    status: &[String],
+    change_request: Option<&str>,
+) -> serde_json::Value {
+    night.merge(tokens);
+    json!({
+        "unit": unit,
+        "ok": ended.is_ok(),
+        "tokens": night.json(),
+        "status": status,
+        "change_request": change_request,
+        "error": ended.as_ref().err().map(|e| format!("{e:#}")),
+    })
+}
+
+/// Runs `run` and totals the tokens of the sessions it kept, so earlier nights' sessions are not
+/// counted. When the sessions cannot be listed before or after, they are unknown, not none.
+fn kept_during<T>(
+    transcripts: &Transcripts,
+    harness: &dyn harness::Harness,
+    unit: u64,
+    run: impl FnOnce() -> T,
+) -> (T, Sum) {
+    let id = unit.to_string();
+    let before = transcripts.sessions(&id);
+    let result = run();
+    let after = transcripts.sessions(&id);
+    let tokens = match (before, after) {
+        (Ok(before), Ok(after)) => token_totals::read(harness, &new_sessions(&before, after)).all,
+        (before, after) => {
+            let e = before.err().or(after.err()).unwrap();
+            eprintln!("ns: unit {unit}: its sessions cannot be counted: {e:#}");
+            Sum {
+                unknown: 1,
+                ..Sum::default()
+            }
+        }
+    };
+    (result, tokens)
+}
+
+/// The sessions of `after` that are not in `before`: what a unit's run kept.
+fn new_sessions(before: &[Session], after: Vec<Session>) -> Vec<Session> {
+    after
+        .into_iter()
+        .filter(|s| !before.iter().any(|b| b.path == s.path))
+        .collect()
+}
+
 /// Whether a night is for real or only shows what it would do.
 enum Mode<'a> {
     DryRun,
@@ -194,6 +252,7 @@ fn night_write(
                 labels.as_deref().map_err(String::as_str),
                 last_move(e.unit).as_ref(),
                 &e.run,
+                e.tokens,
             )
         })
         .collect();
@@ -293,6 +352,7 @@ fn night_run(
     };
     // The unit's last move before it ran, to tell a move this run wrote from an older one.
     let before = RefCell::new(None);
+    let transcripts = Transcripts::open(vcs, root)?;
     failed += units_run(
         forge.as_ref(),
         os,
@@ -301,17 +361,21 @@ fn night_run(
         streak,
         &mut |unit| {
             *before.borrow_mut() = log.last_move(&unit.to_string()).ok().flatten();
-            let result = unit_run::run(unit_run::Args::unattended(
-                unit,
-                options.clone(),
-                limits.deadline,
-            ));
+            let (result, tokens) = kept_during(&transcripts, harness.as_ref(), unit, || {
+                unit_run::run(unit_run::Args::unattended(
+                    unit,
+                    options.clone(),
+                    limits.deadline,
+                ))
+            });
             let run = match &result {
                 Ok(()) => summary::Run::Done,
                 Err(e) => summary::Run::Failed(format!("{e:#}")),
             };
-            ended.borrow_mut().push(summary::Ended { unit, run });
-            result
+            ended
+                .borrow_mut()
+                .push(summary::Ended { unit, run, tokens });
+            (result, tokens)
         },
         &mut |unit| {
             went_wrong_since(
@@ -366,19 +430,21 @@ struct Limits {
 }
 
 /// Starts the ready units one at a time with `run_unit` until none is left or `limits` say stop,
-/// printing how each ended, and returns how many did not end well. `went_wrong` says, of a unit that
-/// did not end well, whether it got stuck because a state kept going wrong; those count toward
-/// `streak`, which also stops the night once it is reached.
+/// printing how each ended with the night's running tokens, and returns how many did not end well.
+/// `run_unit` gives the unit's result and the tokens of the sessions it kept. `went_wrong` says, of
+/// a unit that did not end well, whether it got stuck because a state kept going wrong; those count
+/// toward `streak`, which also stops the night once it is reached.
 fn units_run(
     forge: &dyn Forge,
     os: &dyn Os,
     root: &Path,
     limits: &Limits,
     streak: &mut Streak,
-    run_unit: &mut dyn FnMut(u64) -> Result<()>,
+    run_unit: &mut dyn FnMut(u64) -> (Result<()>, Sum),
     went_wrong: &mut dyn FnMut(u64) -> bool,
 ) -> Result<usize> {
     let mut failed = 0;
+    let mut night = Sum::default();
     // A unit is run once, even when it is still ready afterwards.
     let mut run_already = HashSet::new();
     while limits.max_units.is_none_or(|max| run_already.len() < max) && !streak.reached() {
@@ -398,7 +464,7 @@ fn units_run(
             break;
         };
         run_already.insert(unit);
-        let ended = run_unit(unit);
+        let (ended, unit_tokens) = run_unit(unit);
         if let Err(e) = &ended {
             eprintln!("ns: unit {unit}: {e:#}");
             failed += 1;
@@ -420,13 +486,14 @@ fn units_run(
             .map(|cr| cr.url);
         println!(
             "{}",
-            json!({
-                "unit": unit,
-                "ok": ended.is_ok(),
-                "status": status,
-                "change_request": change_request,
-                "error": ended.as_ref().err().map(|e| format!("{e:#}")),
-            })
+            unit_line(
+                unit,
+                &ended,
+                &mut night,
+                &unit_tokens,
+                &status,
+                change_request.as_deref(),
+            )
         );
     }
     Ok(failed)
@@ -625,7 +692,7 @@ mod tests {
             &mut |unit| {
                 started.borrow_mut().push(unit);
                 clock.0.set(clock.0.get() + each);
-                Ok(())
+                (Ok(()), Sum::default())
             },
             &mut |_| false,
         )
@@ -662,7 +729,7 @@ mod tests {
             &mut Streak::new(0),
             &mut |unit| {
                 started.borrow_mut().push(unit);
-                Ok(())
+                (Ok(()), Sum::default())
             },
             &mut |_| false,
         )
@@ -820,15 +887,118 @@ mod tests {
             summary::Ended {
                 unit: 1,
                 run: summary::Run::Done,
+                tokens: Sum::default(),
             },
             summary::Ended {
                 unit: 2,
                 run: summary::Run::Failed("boom".into()),
+                tokens: Sum::default(),
             },
         ];
         let text = night_text(&Ready::default(), ended, None);
-        assert!(text.contains("## Merged\n\n- #1\n"), "{text}");
-        assert!(text.contains("## Stuck\n\n- #2: boom\n"), "{text}");
+        assert!(
+            text.contains("## Merged\n\n- #1\n  Tokens: no tokens known\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("## Stuck\n\n- #2: boom\n  Tokens: no tokens known\n"),
+            "{text}"
+        );
+    }
+
+    fn session(path: &str) -> Session {
+        Session {
+            state: crate::state::State::Build,
+            n: 1,
+            path: path.into(),
+            model: None,
+        }
+    }
+
+    #[test]
+    fn a_unit_run_counts_only_the_sessions_kept_during_it() {
+        let before = [session("7/build-1.jsonl")];
+        let after = vec![session("7/build-1.jsonl"), session("7/verify-1.jsonl")];
+        assert_eq!(new_sessions(&before, after), [session("7/verify-1.jsonl")]);
+    }
+
+    fn known(i: u64, o: u64, r: u64, w: u64) -> Sum {
+        Sum {
+            tokens: crate::harness::Tokens {
+                input: i,
+                output: o,
+                cache_read: r,
+                cache_write: w,
+            },
+            known: 1,
+            unknown: 0,
+        }
+    }
+
+    #[test]
+    fn each_units_line_shows_the_nights_running_total_and_an_unreadable_unit_adds_nothing() {
+        let unreadable = Sum {
+            unknown: 1,
+            ..Sum::default()
+        };
+        let mut night = Sum::default();
+        let line = |night: &mut Sum, unit, tokens: Sum| {
+            unit_line(unit, &Ok(()), night, &tokens, &[], None)
+        };
+        assert_eq!(
+            line(&mut night, 1, known(1, 2, 3, 4)),
+            json!({"unit": 1, "ok": true, "status": [], "change_request": null, "error": null,
+                "tokens": {"known": 1, "unknown": 0, "input": 1, "output": 2, "cache_read": 3, "cache_write": 4}})
+        );
+        assert_eq!(
+            line(&mut night, 2, unreadable)["tokens"],
+            json!({"known": 1, "unknown": 1, "input": 1, "output": 2, "cache_read": 3, "cache_write": 4})
+        );
+        assert_eq!(
+            line(&mut night, 3, known(10, 20, 30, 40))["tokens"],
+            json!({"known": 2, "unknown": 1, "input": 11, "output": 22, "cache_read": 33, "cache_write": 44})
+        );
+    }
+
+    fn transcript(input: u64, output: u64) -> String {
+        format!(
+            r#"{{"type":"assistant","message":{{"id":"a","model":"m","usage":{{"input_tokens":{input},"output_tokens":{output},"cache_read_input_tokens":3,"cache_creation_input_tokens":4}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn a_run_counts_the_sessions_it_kept_and_not_those_of_earlier_nights() {
+        let tmp = tempfile::tempdir().unwrap();
+        let transcripts = Transcripts::at(tmp.path().to_path_buf());
+        transcripts
+            .keep("7", State::Build, transcript(100, 200).as_bytes(), None)
+            .unwrap();
+        let harness = harness::get();
+        let (result, tokens) = kept_during(&transcripts, harness.as_ref(), 7, || {
+            transcripts
+                .keep("7", State::Verify, transcript(1, 2).as_bytes(), None)
+                .unwrap();
+            transcripts
+                .keep("7", State::Review, b"not a transcript", None)
+                .unwrap();
+            "ran"
+        });
+        assert_eq!(result, "ran");
+        assert_eq!(
+            tokens.json(),
+            json!({"known": 1, "unknown": 1, "input": 1, "output": 2, "cache_read": 3, "cache_write": 4})
+        );
+    }
+
+    #[test]
+    fn sessions_that_cannot_be_listed_are_unknown_and_not_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The unit's directory is a file, so listing it fails.
+        std::fs::write(tmp.path().join("7"), "").unwrap();
+        let transcripts = Transcripts::at(tmp.path().to_path_buf());
+        let harness = harness::get();
+        let (_, tokens) = kept_during(&transcripts, harness.as_ref(), 7, || ());
+        assert_eq!(tokens.json(), json!({"known": 0, "unknown": 1}));
     }
 
     #[test]
@@ -840,11 +1010,12 @@ mod tests {
         let ended = vec![summary::Ended {
             unit: 1,
             run: summary::Run::Done,
+            tokens: Sum::default(),
         }];
         let text = night_text(&forge, ended, None);
         assert!(text.contains("## Merged\n\nNone\n"), "{text}");
         assert!(
-            text.contains("- #1: its labels could not be read from the forge: rate limited\n"),
+            text.contains("- #1: its labels could not be read from the forge: rate limited\n  Tokens: no tokens known\n"),
             "{text}"
         );
     }
@@ -873,10 +1044,11 @@ mod tests {
             streak,
             &mut |unit| {
                 started.borrow_mut().push(unit);
-                match end_of(unit) {
+                let ended = match end_of(unit) {
                     End::Finishes => Ok(()),
                     End::ChecksFail | End::WentWrong => Err(anyhow::anyhow!("stuck")),
-                }
+                };
+                (ended, Sum::default())
             },
             &mut |unit| matches!(end_of(unit), End::WentWrong),
         )
@@ -899,9 +1071,12 @@ mod tests {
             &mut streak,
             &mut |unit| {
                 started.borrow_mut().push(unit);
-                Err(anyhow::Error::new(crate::harness::UsageLimit {
-                    resets: None,
-                }))
+                (
+                    Err(anyhow::Error::new(crate::harness::UsageLimit {
+                        resets: None,
+                    })),
+                    Sum::default(),
+                )
             },
             &mut |_| true,
         )

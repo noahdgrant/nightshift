@@ -28,9 +28,14 @@ pub struct Session {
 
 impl Transcripts {
     pub fn open(vcs: &dyn Vcs, root: &Path) -> Result<Transcripts> {
-        Ok(Transcripts {
-            dir: vcs.state_dir_find(root)?.join("transcripts"),
-        })
+        Ok(Transcripts::at(
+            vcs.state_dir_find(root)?.join("transcripts"),
+        ))
+    }
+
+    /// The transcripts kept in `dir`.
+    pub fn at(dir: PathBuf) -> Transcripts {
+        Transcripts { dir }
     }
 
     /// The number the next session of `state` for `unit` is kept under.

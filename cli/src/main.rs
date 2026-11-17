@@ -30,6 +30,7 @@ mod status;
 mod suggest;
 mod summary;
 mod sync;
+mod token_totals;
 mod transcripts;
 mod triage;
 mod troubleshoot;
