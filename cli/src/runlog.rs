@@ -70,6 +70,16 @@ impl Reason {
         }
     }
 
+    /// The word the run log and `ns status` use for the reason.
+    pub fn name(self) -> &'static str {
+        match self {
+            Reason::Failed => "failed",
+            Reason::WentWrong => "went_wrong",
+            Reason::Inconclusive => "inconclusive",
+            Reason::BaseMoved => "base_moved",
+        }
+    }
+
     pub fn parse(text: &str) -> Option<Reason> {
         match text {
             "failed" => Some(Reason::Failed),
@@ -186,6 +196,35 @@ impl RunLog {
             reason: last["reason"].as_str().and_then(Reason::parse),
         }))
     }
+
+    /// Which attempt of its state `unit` is in, or was stuck in, as `ns run` counted it and logged
+    /// it on the last move: `to_attempt` for a unit that is not stuck, `attempt` for one that is.
+    /// A move with neither is the first attempt. `None` for a unit that never moved, is done, or
+    /// got stuck with no state.
+    pub fn attempt(&self, unit: &str) -> Result<Option<u32>> {
+        let events = self.events()?;
+        let Some(last) = events
+            .iter()
+            .rfind(|e| e["unit"] == unit && e.get("to").is_some())
+        else {
+            return Ok(None);
+        };
+        let field = match last["to"].as_str().and_then(State::parse) {
+            Some(State::Done) | None => return Ok(None),
+            Some(State::Stuck) => {
+                if last["from"].as_str().and_then(State::parse).is_none() {
+                    return Ok(None);
+                }
+                "attempt"
+            }
+            Some(_) => "to_attempt",
+        };
+        Ok(Some(
+            last[field]
+                .as_u64()
+                .map_or(1, |n| u32::try_from(n).unwrap_or(u32::MAX)),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -281,5 +320,75 @@ mod tests {
     fn a_last_move_to_nowhere_is_an_error() {
         let (_tmp, log) = log_with(r#"{"unit":"5","from":"build","to":"nowhere"}"#);
         assert!(log.last_move("5").is_err());
+    }
+
+    #[test]
+    fn a_reason_names_itself_as_the_log_spells_it() {
+        for r in ["failed", "went_wrong", "inconclusive", "base_moved"] {
+            assert_eq!(Reason::parse(r).unwrap().name(), r);
+        }
+    }
+
+    #[test]
+    fn a_unit_redone_in_build_is_in_its_third_attempt() {
+        let (_tmp, log) = log_with(
+            r#"{"unit":"5","from":"setup","to":"build","to_attempt":1}
+{"unit":"5","from":"build","to":"build","reason":"failed","attempt":1,"to_attempt":2}
+{"unit":"6","from":"build","to":"build","reason":"failed","attempt":1,"to_attempt":2}
+{"unit":"5","from":"build","to":"build","reason":"went_wrong","attempt":2,"to_attempt":3}
+"#,
+        );
+        assert_eq!(log.attempt("5").unwrap(), Some(3));
+        assert_eq!(log.attempt("6").unwrap(), Some(2));
+        assert_eq!(log.attempt("7").unwrap(), None);
+    }
+
+    #[test]
+    fn a_unit_that_has_moved_on_starts_its_new_state_at_one() {
+        let (_tmp, log) = log_with(
+            r#"{"unit":"5","from":"build","to":"build","attempt":1,"to_attempt":2}
+{"unit":"5","from":"build","to":"verify","to_attempt":1}
+"#,
+        );
+        assert_eq!(log.attempt("5").unwrap(), Some(1));
+    }
+
+    #[test]
+    fn a_stuck_unit_reports_the_attempt_it_was_stuck_in() {
+        let (_tmp, log) = log_with(
+            r#"{"unit":"5","from":"build","to":"build","reason":"failed","attempt":1,"to_attempt":2}
+{"unit":"5","from":"build","to":"stuck","reason":"failed","attempt":2,"to_attempt":1}
+"#,
+        );
+        assert_eq!(log.attempt("5").unwrap(), Some(2));
+    }
+
+    #[test]
+    fn a_run_stopped_at_a_gate_and_resumed_starts_again_at_one() {
+        let (_tmp, log) = log_with(
+            r#"{"unit":"5","from":"build","to":"build","reason":"failed","attempt":1,"to_attempt":2}
+{"unit":"5","from":"build","to":"verify","to_attempt":1}
+{"unit":"5","waiting":"verify"}
+{"unit":"5","state":"verify"}
+"#,
+        );
+        assert_eq!(log.attempt("5").unwrap(), Some(1));
+    }
+
+    #[test]
+    fn a_move_from_an_older_log_with_no_attempt_is_the_first() {
+        let (_tmp, log) = log_with(r#"{"unit":"5","from":"setup","to":"build"}"#);
+        assert_eq!(log.attempt("5").unwrap(), Some(1));
+    }
+
+    #[test]
+    fn a_done_unit_and_a_stuck_one_with_no_state_have_no_attempt() {
+        let (_tmp, log) = log_with(
+            r#"{"unit":"5","from":"ship","to":"done"}
+{"unit":"6","from":"nowhere","to":"stuck"}
+"#,
+        );
+        assert_eq!(log.attempt("5").unwrap(), None);
+        assert_eq!(log.attempt("6").unwrap(), None);
     }
 }

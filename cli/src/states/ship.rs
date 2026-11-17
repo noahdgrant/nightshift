@@ -130,25 +130,53 @@ fn hold_find(ctx: &Context, root: &Path, dir: &Path) -> Result<Option<String>> {
     let base = ctx.vcs.workspace_base_find(dir)?;
     let files = ctx.vcs.workspace_files_changed(dir, &base)?;
     Ok(match manifest::human_review_read(root)?.verdict(&files)? {
-        Verdict::NeedsHuman { file, glob } => Some(format!(
-            "{file} matches {glob} in merge.human_review, so a person merges it"
-        )),
-        _ => region_hold_find(ctx, dir, &base, &files)?,
+        Verdict::NeedsHuman { file, glob } => Some(glob_hold(&file, &glob)),
+        _ => region_hold_find(ctx.vcs.as_ref(), dir, &base, &files)?,
     })
+}
+
+/// The sentence for a changed file that matches a path of `merge.human_review`.
+fn glob_hold(file: &str, glob: &str) -> String {
+    format!("{file} matches {glob} in merge.human_review, so a person merges it")
+}
+
+/// Every reason a person must merge the change in `dir`, which `hold_find` gives the first of: each
+/// changed file that matches a path of `merge.human_review`, then each that touches a
+/// human-review region, in the sentences `hold_find` gives. It asks only questions of the
+/// workspace and moves nothing, so `ns status` may call it.
+pub fn holds_list(vcs: &dyn Vcs, root: &Path, dir: &Path) -> Result<Vec<String>> {
+    let base = vcs.workspace_base_find(dir)?;
+    let files = vcs.workspace_files_changed(dir, &base)?;
+    let policy = manifest::human_review_read(root)?;
+    let mut holds = Vec::new();
+    for file in &files {
+        if let Verdict::NeedsHuman { file, glob } = policy.verdict(std::slice::from_ref(file))? {
+            holds.push(glob_hold(&file, &glob));
+        }
+    }
+    for file in &files {
+        holds.extend(region_hold_find(
+            vcs,
+            dir,
+            &base,
+            std::slice::from_ref(file),
+        )?);
+    }
+    Ok(holds)
 }
 
 /// Why a person must merge the change, when it touches a human-review region of one of `files`:
 /// the first file that does.
 fn region_hold_find(
-    ctx: &Context,
+    vcs: &dyn Vcs,
     dir: &Path,
     base: &str,
     files: &[String],
 ) -> Result<Option<String>> {
     for file in files {
-        let hunks = ctx.vcs.workspace_hunks(dir, base, file)?;
-        let old = ctx.vcs.workspace_file_read(dir, base, file)?;
-        let new = ctx.vcs.workspace_file_read(dir, "HEAD", file)?;
+        let hunks = vcs.workspace_hunks(dir, base, file)?;
+        let old = vcs.workspace_file_read(dir, base, file)?;
+        let new = vcs.workspace_file_read(dir, "HEAD", file)?;
         if let Some(why) = merge::region_hold(file, old.as_deref(), new.as_deref(), &hunks) {
             return Ok(Some(why));
         }

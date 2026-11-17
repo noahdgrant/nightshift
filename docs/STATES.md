@@ -34,6 +34,17 @@ stateDiagram
 
 `ns status` says whether `ns` is running a unit right now. `ns run` takes `unit-<n>.lock` in the `ns` state directory and writes its process id and start time into it; `ns auto` runs units through `ns run`, so it does the same. Each unit in the output has `running`, `{"pid":..,"since":..}` while some process holds that lock and `null` otherwise. The operating system's lock decides, not the file: a process killed with SIGKILL leaves the file with its old pid, and the next `ns status` reads `running: null`. A unit labeled `status:in-progress` with `running: null` also has `"stale": true`, a run that died without a trace; no other unit has the key. `ns status` holds a shared lock on the file for an instant and removes no file; `ns run` steps past that instant with a few short tries, so reading never stops a run or keeps one from starting. It does not stop, resume or take over a stale unit; `ns run <unit>` resumes it, and it does not say whether `ns auto` itself is running.
 
+`ns status <unit>` prints one JSON object for one unit and changes nothing; `ns status` with no unit prints the list above. The object has `unit`, `title`, `status`, `state`, `moved_at`, `running` and `change_request` as in the list, and:
+
+- `attempt` and `max_attempts`: which attempt of its state the unit is in, or was stuck in, and `[run] max_attempts`. The run log records the attempt every move leads to, as `ns run` counts it, so a run stopped at a gate and resumed starts again at 1. `null` for a unit that never ran or is `done`.
+- `change_request.checks`, for an open change request: `{"state":"passing"}`, `{"state":"pending"}` (also when no check is reported yet) or `{"state":"failing","failing":[names]}`.
+- `stopped`, for a unit whose last move is to `stuck`: `{"reason":..,"state":..}`, the reason (`failed`, `went_wrong`, `inconclusive` or `base_moved`) and the state it was stuck in.
+- `needs`, for a unit that waits for a person and whose workspace exists: `{"review":[..]}` names each file of an open change request that matches `[merge] human_review` or touches a human-review region, as `ship` words it; `{"unproven":[..]}` lists the Must requirements the last verification left unproven, for a unit stuck as `inconclusive`. A unit that waits for another reason (hardware, credentials, a decision) has no `needs`, because `ns` does not know what the person must do.
+- `artifacts`, when the workspace exists: the paths of `build.md`, the latest `verify-<n>.md` and the latest `review-<n>.md`, each when it exists.
+- `findings`, when a verification or a review has run: `verification` counts the requirements the latest verification found FAIL or INCONCLUSIVE, and `review` counts, per session, the findings of the latest review (each ends in a `Fix level:` line). `--findings` adds `text` with the findings themselves.
+
+A unit that does not exist is an error that names it, with a non-zero exit.
+
 ## `ns run`
 
 The table in `cli/src/state.rs` is the source of truth.

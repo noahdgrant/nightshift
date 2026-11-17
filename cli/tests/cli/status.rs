@@ -31,6 +31,19 @@ fn run_status_in(
     change_requests: &[(u64, &str)],
     runs: &str,
 ) -> assert_cmd::assert::Assert {
+    run_ns(repo, issues, change_requests, runs, "[]", &["status"])
+}
+
+/// Runs `ns` with `args` against a fake `gh`. It answers `gh api .../issues/<n>` with the issue
+/// of that number in `issues` and fails for any other; `checks` is what `gh pr checks` prints.
+fn run_ns(
+    repo: &Repo,
+    issues: &[String],
+    change_requests: &[(u64, &str)],
+    runs: &str,
+    checks: &str,
+    args: &[&str],
+) -> assert_cmd::assert::Assert {
     let bin = repo.path.parent().unwrap().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let cases: String = change_requests
@@ -41,16 +54,25 @@ fn run_status_in(
             )
         })
         .collect();
+    let one: String = issues
+        .iter()
+        .map(|issue| {
+            let number = serde_json::from_str::<Value>(issue).unwrap()["number"].clone();
+            format!("*/issues/{number}) cat <<'EOF'\n{issue}\nEOF\n;;\n")
+        })
+        .collect();
     script(
         &bin,
         "gh",
         &format!(
             r#"case "$1" in
-api) cat <<'EOF'
+api) case "$*" in
+{one}*/issues/*) echo "gh: Not Found (HTTP 404)" >&2; exit 1;;
+*) cat <<'EOF'
 [[{}]]
 EOF
-;;
-pr) case "$*" in {cases} *) echo '[]';; esac;;
+;; esac;;
+pr) case "$*" in "pr checks"*) echo '{checks}';; {cases} *) echo '[]';; esac;;
 esac"#,
             issues.join(",")
         ),
@@ -59,7 +81,7 @@ esac"#,
     std::fs::write(repo.path.join(".git/ns/runs.jsonl"), runs).unwrap();
     Command::cargo_bin("ns")
         .unwrap()
-        .arg("status")
+        .args(args)
         .env(
             "PATH",
             format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
@@ -375,4 +397,349 @@ fn a_unit_not_in_progress_is_never_stale() {
     for unit in out["units"].as_array().unwrap() {
         assert!(unit.get("stale").is_none(), "{unit}");
     }
+}
+
+// `ns status <unit>`
+
+fn detail_in(
+    repo: &Repo,
+    issues: &[String],
+    crs: &[(u64, &str)],
+    runs: &str,
+    checks: &str,
+) -> Value {
+    detail_with(repo, issues, crs, runs, checks, &[])
+}
+
+fn detail_with(
+    repo: &Repo,
+    issues: &[String],
+    crs: &[(u64, &str)],
+    runs: &str,
+    checks: &str,
+    flags: &[&str],
+) -> Value {
+    let mut args = vec!["status", "7"];
+    args.extend(flags);
+    let out = run_ns(repo, issues, crs, runs, checks, &args).success();
+    serde_json::from_slice(&out.get_output().stdout).unwrap()
+}
+
+/// A repository with unit 7's workspace, its recorded base at `main`, and `files` committed in it.
+fn workspace_with(files: &[(&str, &str)]) -> Repo {
+    let repo = open_unit_repo();
+    git(&repo.path, &["update-ref", "refs/ns/base/ns/7", "main"]);
+    let ws = repo.workspace("7");
+    for (name, text) in files {
+        let path = ws.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    git(&ws, &["add", "-A", "-f"]);
+    git(&ws, &["commit", "-q", "-m", "change", "--allow-empty"]);
+    repo
+}
+
+#[test]
+fn a_unit_is_described_with_its_base_fields_and_nothing_is_changed() {
+    let repo = Repo::new();
+    let runs = "{\"unit\":\"7\",\"from\":\"setup\",\"to\":\"build\",\"at\":100}\n";
+    let issues = [unit(7, &["status:in-progress"])];
+    let out = detail_in(&repo, &issues, &[], runs, "[]");
+    assert_eq!(out["unit"], 7);
+    assert_eq!(out["title"], "unit 7");
+    assert_eq!(out["status"], "status:in-progress");
+    assert_eq!(out["state"], "build");
+    assert_eq!(out["moved_at"], 100);
+    assert_eq!(out["running"], Value::Null);
+    assert_eq!(out["change_request"], Value::Null);
+    assert!(out.get("stopped").is_none());
+    assert!(out.get("needs").is_none());
+    assert!(out.get("artifacts").is_none());
+    assert!(out.get("findings").is_none());
+    // Nothing the run changed: the log, the labels (no `gh` call that writes) and the workspace.
+    assert_eq!(
+        std::fs::read_to_string(repo.path.join(".git/ns/runs.jsonl")).unwrap(),
+        runs
+    );
+    assert!(!repo.workspace("7").exists());
+    assert_eq!(
+        std::fs::read_dir(repo.path.join(".git/ns"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_unit_that_does_not_exist_is_an_error_naming_it() {
+    let repo = Repo::new();
+    let issues = [unit(7, &[])];
+    let failed = run_ns(&repo, &issues, &[], "", "[]", &["status", "999"]).failure();
+    let stderr = String::from_utf8_lossy(&failed.get_output().stderr).to_string();
+    assert!(stderr.contains("unit 999"), "{stderr}");
+}
+
+#[test]
+fn findings_without_a_unit_is_refused() {
+    let repo = Repo::new();
+    run_ns(
+        &repo,
+        &[unit(7, &[])],
+        &[],
+        "",
+        "[]",
+        &["status", "--findings"],
+    )
+    .failure();
+}
+
+#[test]
+fn the_attempt_and_the_most_attempts_a_state_gets() {
+    let repo = Repo::new();
+    let runs = concat!(
+        r#"{"unit":"7","from":"setup","to":"build","at":1}"#,
+        "\n",
+        r#"{"unit":"7","from":"build","to":"build","reason":"failed","attempt":1,"to_attempt":2,"at":2}"#,
+        "\n",
+    );
+    let issues = [unit(7, &["status:in-progress"])];
+    let out = detail_in(&repo, &issues, &[], runs, "[]");
+    assert_eq!(
+        (out["attempt"].clone(), out["max_attempts"].clone()),
+        (json!(2), json!(3))
+    );
+    std::fs::create_dir_all(repo.path.join(".nightshift")).unwrap();
+    std::fs::write(
+        repo.path.join(".nightshift/nightshift.toml"),
+        "[run]\nmax_attempts = 5\n",
+    )
+    .unwrap();
+    let out = detail_in(&repo, &issues, &[], runs, "[]");
+    assert_eq!(out["max_attempts"], 5);
+}
+
+#[test]
+fn checks_are_pending_passing_or_failing_with_the_names_of_the_failing() {
+    let repo = Repo::new();
+    let issues = [unit(7, &[])];
+    let checks =
+        |json: &str| detail_in(&repo, &issues, &[(7, "OPEN")], "", json)["change_request"].clone();
+    let url = "https://forge.example/7";
+    assert_eq!(
+        checks(r#"[{"name":"a","bucket":"pass"}]"#),
+        json!({"url": url, "state": "open", "checks": {"state": "passing"}})
+    );
+    assert_eq!(
+        checks(r#"[{"name":"a","bucket":"pending"}]"#),
+        json!({"url": url, "state": "open", "checks": {"state": "pending"}})
+    );
+    assert_eq!(
+        checks("[]"),
+        json!({"url": url, "state": "open", "checks": {"state": "pending"}})
+    );
+    assert_eq!(
+        checks(
+            r#"[{"name":"lint","bucket":"fail"},{"name":"test","bucket":"fail"},{"name":"a","bucket":"pass"}]"#
+        ),
+        json!({"url": url, "state": "open", "checks": {"state": "failing", "failing": ["lint", "test"]}})
+    );
+    // A merged request has no checks to wait for.
+    let merged = detail_in(&repo, &issues, &[(7, "MERGED")], "", "[]")["change_request"].clone();
+    assert_eq!(merged, json!({"url": url, "state": "merged"}));
+}
+
+#[test]
+fn a_stuck_unit_says_why_and_in_which_state() {
+    let repo = Repo::new();
+    let issues = [unit(7, &["status:stuck"])];
+    for reason in ["failed", "went_wrong", "inconclusive", "base_moved"] {
+        let runs =
+            format!(r#"{{"unit":"7","from":"verify","to":"stuck","reason":"{reason}","at":5}}"#);
+        let out = detail_in(&repo, &issues, &[], &runs, "[]");
+        assert_eq!(out["stopped"], json!({"reason": reason, "state": "verify"}));
+        assert_eq!(out["attempt"], 1);
+    }
+}
+
+#[test]
+fn a_unit_that_is_running_or_done_has_no_stopped() {
+    let repo = Repo::new();
+    let issues = [unit(7, &[])];
+    for last in [
+        r#""from":"build","to":"verify""#,
+        r#""from":"ship","to":"done""#,
+    ] {
+        let runs = format!("{{\"unit\":\"7\",{last}}}\n");
+        let out = detail_in(&repo, &issues, &[], &runs, "[]");
+        assert!(out.get("stopped").is_none(), "{out}");
+    }
+}
+
+#[test]
+fn a_change_held_for_review_names_its_files_and_regions() {
+    let repo = workspace_with(&[("src/a.rs", "fn a() {}\n")]);
+    std::fs::create_dir_all(repo.path.join(".nightshift")).unwrap();
+    std::fs::write(
+        repo.path.join(".nightshift/nightshift.toml"),
+        "[merge]\nhuman_review = [\"src/**\"]\n",
+    )
+    .unwrap();
+    let issues = [unit(7, &["status:waiting-for-human"])];
+    let out = detail_in(&repo, &issues, &[(7, "OPEN")], "", "[]");
+    assert_eq!(
+        out["needs"],
+        json!({"review": ["src/a.rs matches src/** in merge.human_review, so a person merges it"]})
+    );
+}
+
+#[test]
+fn a_change_in_a_human_review_region_is_named_with_its_lines() {
+    let marker = |s: &str| format!("// ns:human-{s}\n");
+    let before = format!(
+        "{}secret\n{}",
+        marker("review start: money"),
+        marker("review end")
+    );
+    let repo = Repo::new();
+    git(&repo.path, &["push", "-q", "origin", "main"]);
+    std::fs::write(repo.path.join("pay.rs"), &before).unwrap();
+    git(&repo.path, &["add", "pay.rs"]);
+    git(&repo.path, &["commit", "-q", "-m", "pay"]);
+    git(
+        &repo.path,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "ns/7",
+            &repo.workspace("7").to_string_lossy(),
+        ],
+    );
+    git(&repo.path, &["update-ref", "refs/ns/base/ns/7", "main"]);
+    let ws = repo.workspace("7");
+    std::fs::write(ws.join("pay.rs"), before.replace("secret", "changed")).unwrap();
+    git(&ws, &["commit", "-q", "-am", "edit"]);
+    std::fs::create_dir_all(repo.path.join(".nightshift")).unwrap();
+    std::fs::write(
+        repo.path.join(".nightshift/nightshift.toml"),
+        "[merge]\nhuman_review = []\n",
+    )
+    .unwrap();
+    let issues = [unit(7, &["status:waiting-for-human"])];
+    let out = detail_in(&repo, &issues, &[(7, "OPEN")], "", "[]");
+    let holds = out["needs"]["review"].as_array().unwrap();
+    assert_eq!(holds.len(), 1, "{out}");
+    let why = holds[0].as_str().unwrap();
+    assert!(
+        why.contains("pay.rs changes lines 1-3") && why.contains("money"),
+        "{why}"
+    );
+}
+
+#[test]
+fn a_unit_stuck_as_inconclusive_lists_the_requirements_still_unproven() {
+    let repo = workspace_with(&[(
+        ".ns/7/verify-1.md",
+        "### R1\nPASS\n\n### R2\nINCONCLUSIVE: needs staging\n\nVERDICT: INCONCLUSIVE\n",
+    )]);
+    let runs = r#"{"unit":"7","from":"verify","to":"stuck","reason":"inconclusive","at":5}"#;
+    let issues = [unit(7, &["status:stuck"])];
+    let out = detail_in(&repo, &issues, &[], runs, "[]");
+    assert_eq!(
+        out["needs"],
+        json!({"unproven": ["### R2\nINCONCLUSIVE: needs staging\n"]})
+    );
+    // The workspace is where the list comes from: without it there is none.
+    git(
+        &repo.path,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            &repo.workspace("7").to_string_lossy(),
+        ],
+    );
+    let out = detail_in(&repo, &issues, &[], runs, "[]");
+    assert!(out.get("needs").is_none(), "{out}");
+}
+
+#[test]
+fn a_unit_waiting_for_a_person_for_another_reason_has_no_needs() {
+    // Waiting with no open change request: ns does not know what the person must do.
+    let repo = workspace_with(&[("a.txt", "x\n")]);
+    let issues = [unit(7, &["status:waiting-for-human"])];
+    let out = detail_in(&repo, &issues, &[], "", "[]");
+    assert!(out.get("needs").is_none(), "{out}");
+    // An open request that touches nothing a person must review.
+    std::fs::create_dir_all(repo.path.join(".nightshift")).unwrap();
+    std::fs::write(
+        repo.path.join(".nightshift/nightshift.toml"),
+        "[merge]\nhuman_review = []\n",
+    )
+    .unwrap();
+    let out = detail_in(&repo, &issues, &[(7, "OPEN")], "", "[]");
+    assert!(out.get("needs").is_none(), "{out}");
+}
+
+#[test]
+fn artifacts_are_the_paths_of_the_build_the_latest_verification_and_the_latest_review() {
+    let repo = workspace_with(&[
+        (".ns/7/build.md", "built"),
+        (".ns/7/verify-1.md", "x"),
+        (".ns/7/verify-2.md", "y"),
+        (".ns/7/review-1.md", "z"),
+    ]);
+    let ws = repo.workspace("7");
+    let out = detail_in(&repo, &[unit(7, &[])], &[], "", "[]");
+    let dir = ws.join(".ns/7");
+    assert_eq!(
+        out["artifacts"],
+        json!({
+            "build": dir.join("build.md"),
+            "verify": dir.join("verify-2.md"),
+            "review": dir.join("review-1.md"),
+        })
+    );
+}
+
+const FAILED_VERIFICATION: &str =
+    "### R1\nPASS\n\n### R2\nFAIL: wrong\n\n### R3\nFAIL: also wrong\n\nVERDICT: FAIL\n";
+const REVIEW_OF_THREE: &str = "# Review session: Behavior\n\n`a.rs:1` bad\nFix level: none\n\n# Review session: Requirements and tests\n\nVERDICT: PASS\n\n# Review session: Maintainability\n\n`b.rs:2` bad\nFix level: code\nDurable fix: T\n\n`c.rs:3` bad\nFix level: prose\n\nVERDICT: FAIL\n";
+
+#[test]
+fn findings_are_counted_for_the_latest_verification_and_each_review_session() {
+    let repo = workspace_with(&[
+        (".ns/7/verify-1.md", "### R1\nPASS\nVERDICT: PASS\n"),
+        (".ns/7/verify-2.md", FAILED_VERIFICATION),
+        (".ns/7/review-1.md", REVIEW_OF_THREE),
+    ]);
+    let issues = [unit(7, &[])];
+    let out = detail_in(&repo, &issues, &[], "", "[]");
+    assert_eq!(
+        out["findings"],
+        json!({
+            "verification": 2,
+            "review": {"Behavior": 1, "Requirements and tests": 0, "Maintainability": 2},
+        })
+    );
+    // With the flag the text comes too, and the counts are as before.
+    let out = detail_with(&repo, &issues, &[], "", "[]", &["--findings"]);
+    assert_eq!(out["findings"]["verification"], 2);
+    assert_eq!(
+        out["findings"]["text"]["review"]["Behavior"],
+        json!(["`a.rs:1` bad\nFix level: none"])
+    );
+    assert_eq!(
+        out["findings"]["text"]["verification"][0],
+        "### R2\nFAIL: wrong"
+    );
+}
+
+#[test]
+fn a_unit_whose_checks_never_ran_has_no_findings() {
+    let repo = workspace_with(&[(".ns/7/build.md", "built")]);
+    let out = detail_in(&repo, &[unit(7, &[])], &[], "", "[]");
+    assert!(out.get("findings").is_none(), "{out}");
 }

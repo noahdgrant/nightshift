@@ -572,7 +572,15 @@ fn walk(
                 }
             }
         };
-        let mut event = json!({ "unit": unit, "from": state.to_string(), "to": to.to_string() });
+        // `to_attempt` is the attempt the state moved to will be in, so a reader of the log needs
+        // no count of its own.
+        let to_attempt = runs.get(&to).copied().unwrap_or(0) + 1;
+        let mut event = json!({
+            "unit": unit,
+            "from": state.to_string(),
+            "to": to.to_string(),
+            "to_attempt": to_attempt,
+        });
         if to != next {
             event["attempt"] = attempt.into();
             event["reason"] = match outcome {
@@ -770,6 +778,53 @@ mod tests {
                 "verify>stuck",
             ]
         );
+    }
+
+    #[test]
+    fn every_move_logs_the_attempt_of_the_state_it_goes_to() {
+        let mut events = Vec::new();
+        let _ = walk(
+            "u1",
+            State::START,
+            Gates::Auto,
+            2,
+            |s, _| {
+                if s == State::Verify {
+                    Outcome::Fail
+                } else {
+                    Outcome::Pass
+                }
+            },
+            &mut |e| {
+                events.push(e);
+                Ok(())
+            },
+        );
+        let seen: Vec<(String, u64)> = events
+            .iter()
+            .skip(1)
+            .map(|e| {
+                (
+                    format!(
+                        "{}>{}",
+                        e["from"].as_str().unwrap(),
+                        e["to"].as_str().unwrap()
+                    ),
+                    e["to_attempt"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        let expected: Vec<(String, u64)> = [
+            ("setup>build", 1),
+            ("build>verify", 1),
+            ("verify>build", 2),
+            ("build>verify", 2),
+            ("verify>stuck", 1),
+        ]
+        .iter()
+        .map(|(m, n)| (m.to_string(), *n))
+        .collect();
+        assert_eq!(seen, expected);
     }
 
     #[test]

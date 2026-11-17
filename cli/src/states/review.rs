@@ -83,7 +83,7 @@ pub fn focuses(sessions: u32) -> &'static [Focus] {
 }
 
 /// The heading that starts a session's section in the kept review.
-const SECTION: &str = "# Review session: ";
+pub(super) const SECTION: &str = "# Review session: ";
 
 /// Has the harness review the unit's changes, in one, three or six sessions one after another. They
 /// read the change and change nothing. See [`check::run`] for how a session ends; a review fails
