@@ -51,9 +51,31 @@ const NOT_PROVEN_HEADING: &str = "Not proven (Should, Could)";
 /// verification that are inconclusive (leaving out those under `Not proven (Should, Could)`), each with what would make it checkable. The whole
 /// verification when none can be told apart.
 pub fn unproven_note(dir: &Path, unit: &str) -> Result<String> {
-    let verifications = Rounds::new(dir, unit, "verify");
-    let n = verifications.so_far();
-    let text = artifact::read(dir, unit, &format!("verify-{n}.md"))?;
+    let text = last_read(dir, unit)?;
+    let unproven = unproven_sections(&text);
+    let body = if unproven.is_empty() {
+        text.trim().to_string()
+    } else {
+        unproven.join("\n\n")
+    };
+    Ok(format!(
+        "Verification could not prove these Must requirements, twice, so this unit is stuck and a person looks first. \
+         Each says what would make it checkable.\n\n{body}\n"
+    ))
+}
+
+/// The Must requirements the last verification left unproven, one section each, as
+/// `unproven_note` words them. An empty list when none can be told apart; an error when the unit has no verification to read.
+pub fn unproven_list(dir: &Path, unit: &str) -> Result<Vec<String>> {
+    Ok(unproven_sections(&last_read(dir, unit)?))
+}
+
+fn last_read(dir: &Path, unit: &str) -> Result<String> {
+    let n = Rounds::new(dir, unit, "verify").so_far();
+    artifact::read(dir, unit, &format!("verify-{n}.md"))
+}
+
+fn unproven_sections(text: &str) -> Vec<String> {
     let mut sections: Vec<Vec<&str>> = Vec::new();
     // The level of the `Not proven (Should, Could)` heading while inside it: a Should or Could
     // does not stick the unit, so nothing under that heading goes in the note.
@@ -79,20 +101,11 @@ pub fn unproven_note(dir: &Path, unit: &str) -> Result<String> {
             .expect("a section was just pushed")
             .push(line);
     }
-    let unproven: Vec<String> = sections
+    sections
         .iter()
         .map(|s| s.join("\n"))
         .filter(|s| s.contains("INCONCLUSIVE"))
-        .collect();
-    let body = if unproven.is_empty() {
-        text.trim().to_string()
-    } else {
-        unproven.join("\n\n")
-    };
-    Ok(format!(
-        "Verification could not prove these Must requirements, twice, so this unit is stuck and a person looks first. \
-         Each says what would make it checkable.\n\n{body}\n"
-    ))
+        .collect()
 }
 
 pub(crate) fn prompt(

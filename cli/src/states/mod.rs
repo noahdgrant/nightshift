@@ -3,6 +3,7 @@
 pub mod build;
 mod check;
 pub mod clean_up;
+pub mod findings;
 pub mod retrospective;
 pub mod review;
 mod rounds;
@@ -11,7 +12,12 @@ pub mod ship;
 pub mod verdict;
 pub mod verify;
 
-pub use verify::unproven_note;
+pub use verify::{unproven_list, unproven_note};
+
+/// How many runs of the check called `kind` (`verify`, `review`) the unit has kept in `dir`.
+pub fn rounds_so_far(dir: &std::path::Path, unit: &str, kind: &str) -> usize {
+    rounds::Rounds::new(dir, unit, kind).so_far()
+}
 
 use std::path::PathBuf;
 use std::time::Duration;
