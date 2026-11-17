@@ -301,4 +301,102 @@ mod tests {
             );
         }
     }
+
+    /// The `ns` subcommands and `--flags` that `text` names in backticks and the real `ns` does
+    /// not have.
+    fn unknown_ns_names(text: &str) -> Vec<String> {
+        use clap::CommandFactory;
+        let cli = crate::Cli::command();
+        let flags_of = |sub: &str| -> Vec<String> {
+            cli.find_subcommand(sub)
+                .map(|c| {
+                    c.get_arguments()
+                        .filter_map(|a| a.get_long().map(|l| format!("--{l}")))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let mut unknown = Vec::new();
+        for span in text.split('`').skip(1).step_by(2) {
+            let words: Vec<&str> = span.split_whitespace().collect();
+            let flags = words.iter().filter(|w| w.starts_with("--"));
+            let subs: Vec<&str> = match words.as_slice() {
+                ["ns", sub, ..] => {
+                    if cli.find_subcommand(sub).is_none() {
+                        unknown.push(format!("ns {sub}"));
+                        continue;
+                    }
+                    vec![*sub]
+                }
+                _ => vec!["run", "log"],
+            };
+            for flag in flags {
+                if !subs.iter().any(|s| flags_of(s).contains(&flag.to_string())) {
+                    unknown.push((*flag).to_string());
+                }
+            }
+        }
+        unknown
+    }
+
+    #[test]
+    fn the_supervise_skill_is_short_may_start_on_its_own_and_states_each_rule() {
+        let text = embedded()
+            .iter()
+            .find(|(n, _)| *n == "ns-supervise")
+            .unwrap()
+            .1;
+        assert!(text.lines().count() <= 60);
+        assert!(!file_for_session("ns-supervise", text).contains("disable-model-invocation"));
+        let description = text
+            .lines()
+            .find(|l| l.starts_with("description:"))
+            .unwrap();
+        assert!(description.contains("driving `ns`"));
+        for needed in [
+            "main checkout",
+            "`NS_DEV",
+            "`PATH`",
+            "--fresh",
+            "`ns run <unit>`",
+            "`ns/<unit>`",
+            "--gates stop",
+            "`.ns/<unit>/`",
+            "`ns log <unit>`",
+            "`needs-human-merge`",
+            "`failed`",
+            "`went_wrong`",
+            "`inconclusive`",
+            "`base_moved`",
+            "{\"waiting\":",
+            "{\"stopped\":\"usage_limit\"}",
+            "{\"blocked_by\":",
+            "{\"from\",\"to\"}",
+            "--ignore-blockers",
+            "`status:waiting-for-human`",
+            "is merged only when the person says to",
+        ] {
+            assert!(text.contains(needed), "{needed}");
+        }
+    }
+
+    #[test]
+    fn the_supervise_skill_names_only_ns_commands_and_flags_that_exist() {
+        let text = embedded()
+            .iter()
+            .find(|(n, _)| *n == "ns-supervise")
+            .unwrap()
+            .1;
+        assert_eq!(unknown_ns_names(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_checker_finds_a_made_up_command_and_a_made_up_flag() {
+        assert_eq!(unknown_ns_names("`ns frobnicate`"), ["ns frobnicate"]);
+        assert_eq!(unknown_ns_names("`ns run 3 --bogus`"), ["--bogus"]);
+        assert_eq!(
+            unknown_ns_names("`ns run 3 --fresh` `--last`"),
+            Vec::<String>::new()
+        );
+    }
 }
