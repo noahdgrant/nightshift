@@ -312,7 +312,7 @@ fn case_add(args: AddReviewArgs) -> Result<()> {
         ),
         ("change.diff", format!("{}\n", change.diff)),
         ("build.md", format!("{}\n", change.body)),
-        ("expect", format!("{}\n", name(&args.expect))),
+        ("expect", format!("{}\n", args.expect.word())),
     ];
     for (file, text) in files {
         std::fs::write(dir.join(file), text)
@@ -393,8 +393,8 @@ fn case_report(case: &str, expect: &Verdict, verdicts: &[Option<Verdict>]) -> (V
         .count();
     let report = json!({
         "case": case,
-        "expected": name(expect),
-        "verdicts": verdicts.iter().map(|v| v.as_ref().map(name)).collect::<Vec<_>>(),
+        "expected": expect.word(),
+        "verdicts": verdicts.iter().map(|v| v.as_ref().map(Verdict::word)).collect::<Vec<_>>(),
         "matches": matches,
     });
     (report, matches == verdicts.len())
@@ -499,15 +499,6 @@ fn verify_measure(
     json!({ "skill": "verify", "runs": runs, "ok": ok, "cases": reports })
 }
 
-fn name(verdict: &Verdict) -> &'static str {
-    match verdict {
-        Verdict::Pass => "PASS",
-        Verdict::Fail => "FAIL",
-        Verdict::Inconclusive => "INCONCLUSIVE",
-        Verdict::Error => "ERROR",
-    }
-}
-
 fn review_measure(
     harness: &dyn Harness,
     dir: &Path,
@@ -605,7 +596,7 @@ mod tests {
         let cases = cases_load(&dir, None).unwrap();
         let got: Vec<_> = cases
             .iter()
-            .map(|c| (c.name.as_str(), name(&c.expect)))
+            .map(|c| (c.name.as_str(), c.expect.word()))
             .collect();
         assert_eq!(
             got,
@@ -634,7 +625,7 @@ mod tests {
         let cases = verify_cases_load(&dir, None).unwrap();
         let got: Vec<_> = cases
             .iter()
-            .map(|c| (c.name.as_str(), name(&c.expect)))
+            .map(|c| (c.name.as_str(), c.expect.word()))
             .collect();
         assert_eq!(
             got,
@@ -664,7 +655,7 @@ mod tests {
             for file in ["unit.md", "build.md", "change.diff"] {
                 std::fs::write(case.join(file), "x\n").unwrap();
             }
-            std::fs::write(case.join("expect"), format!("{}\n", name(&verdict))).unwrap();
+            std::fs::write(case.join("expect"), format!("{}\n", verdict.word())).unwrap();
             assert_eq!(case_load(dir.path(), "c").unwrap().expect, verdict);
         }
     }

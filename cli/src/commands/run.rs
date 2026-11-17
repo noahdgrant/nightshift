@@ -14,7 +14,7 @@ use crate::notify::{self, Facts, Move as Notice, Settings};
 use crate::runlog::{Move, Reason, Resume, RunLog};
 use crate::state::{Outcome, State};
 use crate::states::ship::Refresh;
-use crate::states::{self, clean_up, ship, Context, BUILT_SNAPSHOT};
+use crate::states::{self, clean_up, ship, Context, Done, BUILT_SNAPSHOT};
 use crate::transcripts::Transcripts;
 use crate::{auto, config, forge, harness, lock, manifest, os, status, vcs, workspace};
 
@@ -226,15 +226,15 @@ pub fn run(args: Args) -> Result<()> {
     }
     let halted = std::cell::RefCell::new(None);
     let phase = |state, _attempt| match states::run(&mut ctx, state) {
-        Ok(outcome) => outcome,
+        Ok(done) => done,
         // A usage limit is not the state going wrong: the run stops and the state is not counted.
         Err(e) if harness::usage_limit_of(&e).is_some() => {
             *halted.borrow_mut() = Some(e);
-            Outcome::Halt
+            Outcome::Halt.into()
         }
         Err(e) => {
             eprintln!("ns: {state} went wrong: {e:#}");
-            Outcome::Redo
+            Outcome::Redo.into()
         }
     };
     let mut sink = |mut event: Value| -> Result<()> {
@@ -600,12 +600,12 @@ fn finished_status_set(told: &Told, unit: &str) -> Result<()> {
 /// `max_attempts` times in all. With `Gates::Stop` it also stops, ready to go on, before every
 /// state after the first. `phase` runs a state given its attempt number (from 1). Every move is
 /// passed to `sink` as one JSON event.
-fn walk(
+fn walk<D: Into<Done>>(
     unit: &str,
     start: State,
     gates: Gates,
     max_attempts: u32,
-    mut phase: impl FnMut(State, u32) -> Outcome,
+    mut phase: impl FnMut(State, u32) -> D,
     sink: &mut impl FnMut(Value) -> Result<()>,
 ) -> Result<State> {
     let mut state = start;
@@ -616,7 +616,7 @@ fn walk(
         let attempt = runs.entry(state).or_insert(0);
         *attempt += 1;
         let attempt = *attempt;
-        let outcome = phase(state, attempt);
+        let Done { outcome, facts } = phase(state, attempt).into();
         if matches!(outcome, Outcome::Halt) {
             bail!("unit {unit} was stopped in {state}");
         }
@@ -657,6 +657,8 @@ fn walk(
             }
             .into();
         }
+        // What the state produced rides on the move out of it, and is repeated at a gate.
+        facts.onto(&mut event);
         sink(event)?;
         if to == State::Stuck {
             stuck_in = state;
@@ -666,7 +668,9 @@ fn walk(
             && matches!(outcome, Outcome::Pass | Outcome::Unmerged)
             && state.next().is_some()
         {
-            sink(json!({ "unit": unit, "waiting": state.to_string() }))?;
+            let mut waiting = json!({ "unit": unit, "waiting": state.to_string() });
+            facts.onto(&mut waiting);
+            sink(waiting)?;
             return Ok(state);
         }
     }
@@ -679,6 +683,8 @@ fn walk(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::states::verdict::Verdict;
+    use crate::states::{Facts, SessionVerdict};
 
     fn moves(unit_outcomes: impl FnMut(State, u32) -> Outcome) -> (Vec<String>, bool) {
         moves_with(2, unit_outcomes)
@@ -712,6 +718,158 @@ mod tests {
             })
             .collect();
         (moves, result.is_ok())
+    }
+
+    fn facts_of(facts: Facts) -> Done {
+        let mut done = Done::from(Outcome::Pass);
+        done.facts = facts;
+        done
+    }
+
+    fn check_of(verdict: Verdict, findings: usize, artifact: &str) -> Facts {
+        Facts::check(Some(verdict), findings, std::path::Path::new(artifact))
+    }
+
+    /// Every event of a walk from `setup` whose states pass, each with the facts `facts` gives.
+    fn events_with(gates: Gates, facts: impl Fn(State) -> Done) -> Vec<Value> {
+        let mut events = Vec::new();
+        let _ = walk("u1", State::START, gates, 2, |s, _| facts(s), &mut |e| {
+            events.push(e);
+            Ok(())
+        });
+        events
+    }
+
+    fn verify_facts(s: State) -> Done {
+        match s {
+            State::Verify => facts_of(check_of(Verdict::Pass, 2, "/w/.ns/1/verify-1.md")),
+            _ => Outcome::Pass.into(),
+        }
+    }
+
+    #[test]
+    fn a_move_carries_the_facts_its_state_set_and_a_move_with_none_is_unchanged() {
+        let events = events_with(Gates::Auto, verify_facts);
+        assert_eq!(
+            events[3],
+            json!({
+                "unit": "u1", "from": "verify", "to": "review", "to_attempt": 1,
+                "verdict": "PASS", "findings": 2, "artifact": "/w/.ns/1/verify-1.md",
+            })
+        );
+        assert_eq!(
+            events[1].to_string(),
+            r#"{"from":"setup","to":"build","to_attempt":1,"unit":"u1"}"#
+        );
+    }
+
+    #[test]
+    fn a_waiting_event_repeats_the_facts_of_the_move_before_it() {
+        let mut events = Vec::new();
+        let _ = walk(
+            "u1",
+            State::Verify,
+            Gates::Stop,
+            2,
+            |s, _| verify_facts(s),
+            &mut |e| {
+                events.push(e);
+                Ok(())
+            },
+        );
+        assert_eq!(
+            events[2],
+            json!({
+                "unit": "u1", "waiting": "review",
+                "verdict": "PASS", "findings": 2, "artifact": "/w/.ns/1/verify-1.md",
+            })
+        );
+    }
+
+    #[test]
+    fn a_waiting_event_after_a_move_with_no_facts_has_only_unit_and_waiting() {
+        let mut events = Vec::new();
+        let _ = walk(
+            "u1",
+            State::Setup,
+            Gates::Stop,
+            2,
+            |_, _| Outcome::Pass,
+            &mut |e| {
+                events.push(e);
+                Ok(())
+            },
+        );
+        assert_eq!(events[2], json!({ "unit": "u1", "waiting": "build" }));
+    }
+
+    #[test]
+    fn a_review_move_and_the_waiting_after_it_carry_its_sessions() {
+        let review = |s: State| match s {
+            State::Review => facts_of(Facts {
+                sessions: Some(vec![SessionVerdict {
+                    name: "Behavior".into(),
+                    verdict: Some(Verdict::Fail),
+                }]),
+                ..check_of(Verdict::Fail, 2, "/w/.ns/1/review-1.md")
+            }),
+            _ => Outcome::Pass.into(),
+        };
+        let mut events = Vec::new();
+        let _ = walk(
+            "u1",
+            State::Review,
+            Gates::Stop,
+            2,
+            |s, _| review(s),
+            &mut |e| {
+                events.push(e);
+                Ok(())
+            },
+        );
+        for event in &events[1..] {
+            assert_eq!(event["sessions"][0]["name"], "Behavior", "{event}");
+            assert_eq!(event["findings"], 2, "{event}");
+            assert_eq!(event["verdict"], "FAIL", "{event}");
+        }
+        assert_eq!(events[2]["waiting"], "ship");
+    }
+
+    #[test]
+    fn a_build_move_has_an_artifact_and_no_verdict_or_findings() {
+        let events = events_with(Gates::Auto, |s| match s {
+            State::Build => facts_of(Facts {
+                artifact: Some("/w/.ns/1/build.md".into()),
+                ..Facts::default()
+            }),
+            _ => Outcome::Pass.into(),
+        });
+        assert_eq!(events[2]["artifact"], "/w/.ns/1/build.md");
+        assert!(events[2].get("verdict").is_none() && events[2].get("findings").is_none());
+        assert!(events[3].get("artifact").is_none(), "{}", events[3]);
+    }
+
+    #[test]
+    fn a_caller_that_reads_only_the_old_keys_sees_the_same_events() {
+        let old = ["unit", "from", "to", "to_attempt", "state", "waiting"];
+        let keep = |events: Vec<Value>| -> Vec<Value> {
+            events
+                .into_iter()
+                .map(|e| {
+                    let kept: serde_json::Map<String, Value> = e
+                        .as_object()
+                        .unwrap()
+                        .iter()
+                        .filter(|(k, _)| old.contains(&k.as_str()))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    Value::Object(kept)
+                })
+                .collect()
+        };
+        let plain = events_with(Gates::Stop, |_| Outcome::Pass.into());
+        let rich = events_with(Gates::Stop, verify_facts);
+        assert_eq!(keep(plain), keep(rich));
     }
 
     #[test]

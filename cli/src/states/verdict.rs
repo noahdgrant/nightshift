@@ -12,6 +12,23 @@ pub enum Verdict {
     Error,
 }
 
+impl Verdict {
+    /// The last line of evidence that says it. The one table of verdicts and their words.
+    pub fn line(&self) -> &'static str {
+        match self {
+            Verdict::Pass => PASS_LINE,
+            Verdict::Fail => FAIL_LINE,
+            Verdict::Inconclusive => INCONCLUSIVE_LINE,
+            Verdict::Error => ERROR_LINE,
+        }
+    }
+
+    /// The word after `VERDICT: ` that says it.
+    pub fn word(&self) -> &'static str {
+        self.line().strip_prefix("VERDICT: ").unwrap_or_default()
+    }
+}
+
 pub const PASS_LINE: &str = "VERDICT: PASS";
 pub const FAIL_LINE: &str = "VERDICT: FAIL";
 pub const INCONCLUSIVE_LINE: &str = "VERDICT: INCONCLUSIVE";
@@ -46,6 +63,20 @@ pub fn evidence_ending_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_verdict_parses_from_its_line_and_has_its_word() {
+        let all = [
+            (Verdict::Pass, "PASS"),
+            (Verdict::Fail, "FAIL"),
+            (Verdict::Inconclusive, "INCONCLUSIVE"),
+            (Verdict::Error, "ERROR"),
+        ];
+        for (v, word) in all {
+            assert_eq!(v.word(), word);
+            assert_eq!(parse(&format!("VERDICT: {word}")), Some(v));
+        }
+    }
 
     #[test]
     fn only_the_last_line_counts() {

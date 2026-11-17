@@ -47,10 +47,9 @@ impl<'a> Rounds<'a> {
             })
     }
 
-    /// Keeps `text` as the next run.
-    pub fn keep(&self, text: &str) -> anyhow::Result<()> {
-        artifact::write(self.dir, self.unit, &self.file(self.so_far() + 1), text)?;
-        Ok(())
+    /// Keeps `text` as the next run and returns the path of the file.
+    pub fn keep(&self, text: &str) -> anyhow::Result<std::path::PathBuf> {
+        artifact::write(self.dir, self.unit, &self.file(self.so_far() + 1), text)
     }
 }
 
