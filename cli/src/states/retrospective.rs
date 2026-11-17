@@ -112,6 +112,7 @@ fn grade(
             model: model.clone(),
             timeout: ctx.harness_timeout,
             resume: None,
+            events: None,
         },
     )?;
     if !reply.success {

@@ -258,6 +258,27 @@ mod tests {
     }
 
     #[test]
+    fn session_and_heartbeat_lines_do_not_change_where_a_unit_resumes() {
+        let moves = r#"{"unit":"5","from":"build","to":"verify","at":1}
+"#;
+        let noisy = format!(
+            "{}{}{}{}",
+            r#"{"unit":"5","session":"start","state":"verify","n":1,"model":null}
+"#,
+            r#"{"unit":"5","heartbeat":"verify","seconds":60,"last_tool":null}
+"#,
+            r#"{"unit":"5","session":"end","state":"verify","n":1,"seconds":61,"tokens":{"input":1,"output":2,"cache_read":null,"cache_write":null}}
+"#,
+            ""
+        );
+        let (_a, plain) = log_with(moves);
+        let (_b, with) = log_with(&format!("{moves}{noisy}"));
+        assert_eq!(plain.resume("5").unwrap(), Resume::At(State::Verify));
+        assert_eq!(with.resume("5").unwrap(), Resume::At(State::Verify));
+        assert_eq!(with.last_move("5").unwrap(), plain.last_move("5").unwrap());
+    }
+
+    #[test]
     fn a_finished_unit_is_finished_whatever_its_last_from_says() {
         let (_tmp, log) = log_with(r#"{"unit":"5","from":"nowhere","to":"done","at":1}"#);
         assert_eq!(log.resume("5").unwrap(), Resume::Finished);

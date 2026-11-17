@@ -74,6 +74,7 @@ pub fn run(
         model: model.map(str::to_string),
         timeout,
         resume: None,
+        events: None,
     });
     // Nothing in it is kept, whether or not the session got anywhere.
     workspace::discard(vcs, root, &scratch)?;

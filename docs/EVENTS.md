@@ -16,7 +16,7 @@ The `squash`, `read`, `notified` and `notify` entries that `ns run` and `ns auto
 
 ## `ns run`
 
-`ns run <unit>` prints one event for each thing it does, in order, as it does it. A reader tells the events apart by the field they have: `blocked_by`, `took_over`, `waiting`, `not_merged`, `stopped`, `from`, or else `state`. `ns auto` prints the events of the units it runs in the same way, among its own.
+`ns run <unit>` prints one event for each thing it does, in order, as it does it. A reader tells the events apart by the field they have: `blocked_by`, `took_over`, `waiting`, `not_merged`, `stopped`, `session`, `heartbeat`, `from`, or else `state`. `ns auto` prints the events of the units it runs in the same way, among its own.
 
 ### `ns run: state`
 
@@ -27,6 +27,42 @@ Printed when a run begins at a state, when it resumes there, and when it finishe
 | `unit` | `string` | The unit's number. |
 | `state` | `string` | The state the run is in: `setup`, `build`, `verify`, `review`, `ship`, `retrospective`, `clean_up` or `done`. |
 | `refresh` | `string` | Only on `done`, for a unit whose change request is open and whose run is not from `ns auto`: `current` when the change request was up to date with the base branch, `refreshed` when `ns` rebased it and ran the checks again. |
+
+### `ns run: session start`
+
+Printed when a harness session starts.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `unit` | `string` | The unit's number. |
+| `session` | `string` | Always `start`. |
+| `state` | `string` | The state the session runs for. |
+| `n` | `number` | The number the session's transcript is kept under, from 1. |
+| `model` | `string or null` | The model the session uses; `null` is the harness's own. |
+
+### `ns run: heartbeat`
+
+Printed every 60 seconds while a session runs (`--heartbeat-seconds` sets the interval, `0` turns it off).
+
+| Field | Type | Meaning |
+|---|---|---|
+| `unit` | `string` | The unit's number. |
+| `heartbeat` | `string` | The state the session runs for. |
+| `seconds` | `number` | The seconds the session has run. |
+| `last_tool` | `string or null` | The name of the last tool the harness ran; `null` before it has run one. |
+
+### `ns run: session end`
+
+Printed when a session ends, however it ends: finished, timed out, a usage limit or a harness that failed.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `unit` | `string` | The unit's number. |
+| `session` | `string` | Always `end`. |
+| `state` | `string` | The state the session ran for. |
+| `n` | `number` | The number the session's transcript is kept under. |
+| `seconds` | `number` | The seconds the session ran. |
+| `tokens` | `object` | `input`, `output`, `cache_read` and `cache_write`, each a number or `null` when the harness's stream does not report that kind. Never summed across kinds. |
 
 ### `ns run: move`
 

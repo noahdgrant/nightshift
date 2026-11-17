@@ -52,6 +52,7 @@ pub fn run(ctx: &mut Context) -> Result<Done> {
             model: ctx.model_find(Place::Build)?,
             timeout: ctx.harness_timeout,
             resume: None,
+            events: None,
         },
     )?;
     let summary = artifact::write(&dir, &id, "build.md", &reply.text)?;
@@ -133,6 +134,7 @@ fn squash(
             model: ctx.model_find(Place::Build)?,
             timeout: ctx.harness_timeout,
             resume: Some(session),
+            events: None,
         },
     );
     match resumed {

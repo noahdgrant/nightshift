@@ -237,6 +237,7 @@ fn replay_one(env: &Env, case: &Case, model: &str) -> Result<Replayed> {
             model: Some(model.to_string()),
             timeout: env.timeout,
             resume: None,
+            events: None,
         },
         &mut tokens,
     )?;
@@ -278,6 +279,7 @@ fn replay_one(env: &Env, case: &Case, model: &str) -> Result<Replayed> {
             model: Some(model.to_string()),
             timeout: env.timeout,
             resume: None,
+            events: None,
         },
         &mut tokens,
     )?;

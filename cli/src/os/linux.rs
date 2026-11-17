@@ -1,18 +1,19 @@
 //! Linux. A child leads its own process group, and one that runs out of time takes its group
 //! down with it.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Child, Command};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 
-use super::{systemd, Finished, Installed, Os, Runner, RunnerState};
+use super::{systemd, Finished, Installed, Os, Runner, RunnerState, Streamed};
 
 pub struct Linux;
 
@@ -28,8 +29,15 @@ fn clock_read(tick: Option<&str>) -> DateTime<Local> {
 }
 
 impl Os for Linux {
-    fn process_run(&self, cmd: Command, input: &[u8], timeout: Duration) -> Result<Finished> {
-        run(cmd, input, timeout)
+    fn process_stream(
+        &self,
+        cmd: Command,
+        input: &[u8],
+        timeout: Duration,
+        tick: Duration,
+        on: &mut dyn FnMut(Streamed),
+    ) -> Result<Finished> {
+        run(cmd, input, timeout, tick, on)
     }
 
     fn process_interact(&self, mut cmd: Command) -> Result<bool> {
@@ -69,7 +77,13 @@ impl Os for Linux {
     }
 }
 
-fn run(mut cmd: Command, input: &[u8], timeout: Duration) -> Result<Finished> {
+fn run(
+    mut cmd: Command,
+    input: &[u8],
+    timeout: Duration,
+    tick: Duration,
+    on: &mut dyn FnMut(Streamed),
+) -> Result<Finished> {
     cmd.process_group(0);
     let mut child = cmd.spawn().context("cannot start the process")?;
     let feed = child.stdin.take().map(|mut stdin| {
@@ -79,35 +93,80 @@ fn run(mut cmd: Command, input: &[u8], timeout: Duration) -> Result<Finished> {
             let _ = stdin.write_all(&input);
         })
     });
-    let collect = child.stdout.take().map(|mut stdout| {
+    // The reader sends each line as it arrives; the loop below hands it on.
+    let (lines, arrived) = mpsc::channel::<Vec<u8>>();
+    let reader = child.stdout.take().map(|stdout| {
         thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = stdout.read_to_end(&mut bytes);
-            bytes
+            let mut stdout = BufReader::new(stdout);
+            loop {
+                let mut line = Vec::new();
+                match stdout.read_until(b'\n', &mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if lines.send(line).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
         })
     });
-    let success = wait(&mut child, timeout)?;
+    // A callback that panics unwinds out of here, and the child must not outlive it.
+    let mut group = GroupGuard(Some(child.id()));
+    let mut stdout = Vec::new();
+    let mut take = |line: Vec<u8>, on: &mut dyn FnMut(Streamed)| {
+        on(Streamed::Line(&line));
+        stdout.extend(line);
+    };
+    let started = Instant::now();
+    let mut next_tick = tick;
+    let mut open = reader.is_some();
+    let success = loop {
+        if let Some(status) = child.try_wait().context("cannot wait for the process")? {
+            break Some(status.success());
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            kill_group(child.id());
+            child.wait().context("cannot wait for the process")?;
+            break None;
+        }
+        if !tick.is_zero() && elapsed >= next_tick {
+            on(Streamed::Tick(elapsed));
+            next_tick += tick;
+        }
+        if open {
+            match arrived.recv_timeout(Duration::from_millis(20)) {
+                Ok(line) => take(line, on),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => open = false,
+            }
+        } else {
+            thread::sleep(Duration::from_millis(20));
+        }
+    };
+    group.0 = None;
     if let Some(feed) = feed {
         let _ = feed.join();
     }
-    let stdout = collect
-        .map(|c| c.join().unwrap_or_default())
-        .unwrap_or_default();
+    // What the child printed last is still in the channel until the reader reaches the end.
+    for line in arrived {
+        take(line, on);
+    }
+    if let Some(reader) = reader {
+        let _ = reader.join();
+    }
     Ok(Finished { success, stdout })
 }
 
-fn wait(child: &mut Child, timeout: Duration) -> Result<Option<bool>> {
-    let started = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait().context("cannot wait for the process")? {
-            return Ok(Some(status.success()));
+/// Kills the child's process group when dropped, unless the child is already gone.
+struct GroupGuard(Option<u32>);
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            kill_group(pid);
         }
-        if started.elapsed() >= timeout {
-            kill_group(child.id());
-            child.wait().context("cannot wait for the process")?;
-            return Ok(None);
-        }
-        thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -153,6 +212,67 @@ mod tests {
     }
 
     #[test]
+    fn a_line_reaches_the_callback_before_the_child_exits() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("child-went-on");
+        let script = format!(
+            "echo first; sleep 1; touch {}; echo second",
+            marker.display()
+        );
+        let mut seen = Vec::new();
+        let mut early = None;
+        let done = Linux
+            .process_stream(
+                sh(&script),
+                b"",
+                Duration::from_secs(30),
+                Duration::ZERO,
+                &mut |event| {
+                    if let Streamed::Line(line) = event {
+                        early.get_or_insert(!marker.exists());
+                        seen.push(String::from_utf8_lossy(line).into_owned());
+                    }
+                },
+            )
+            .unwrap();
+        assert_eq!(early, Some(true));
+        assert_eq!(seen, ["first\n", "second\n"]);
+        assert_eq!(done.success, Some(true));
+        assert_eq!(done.stdout, b"first\nsecond\n");
+    }
+
+    #[test]
+    fn a_silent_child_gets_a_tick_each_interval_until_it_ends() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let go = tmp.path().join("go");
+        // The child ends when the callback has seen two ticks, so the test waits on that event and
+        // not on the clock.
+        let script = format!("while [ ! -e {} ]; do sleep 0.05; done", go.display());
+        let mut ticks = Vec::new();
+        Linux
+            .process_stream(
+                sh(&script),
+                b"",
+                Duration::from_secs(30),
+                Duration::from_millis(100),
+                &mut |event| {
+                    if let Streamed::Tick(elapsed) = event {
+                        ticks.push(elapsed);
+                        if ticks.len() == 2 {
+                            std::fs::write(&go, "").unwrap();
+                        }
+                    }
+                },
+            )
+            .unwrap();
+        assert_eq!(ticks.len(), 2);
+        assert!(ticks[0] >= Duration::from_millis(100));
+        assert!(ticks[1] >= ticks[0]);
+    }
+
+    #[test]
     fn a_process_out_of_time_is_killed_with_what_it_started() {
         let _spawn = crate::testutil::spawning();
         let tmp = tempfile::tempdir().unwrap();
@@ -163,6 +283,26 @@ mod tests {
             .process_run(sh(&script), b"", Duration::from_millis(100))
             .unwrap();
         assert_eq!(done.success, None);
+        thread::sleep(Duration::from_millis(1500));
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn a_callback_that_panics_does_not_leave_the_child_running() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("child-lived");
+        let script = format!("echo hi; sleep 1; touch {}", marker.display());
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = Linux.process_stream(
+                sh(&script),
+                b"",
+                Duration::from_secs(30),
+                Duration::ZERO,
+                &mut |_| panic!("stdout is closed"),
+            );
+        }));
+        assert!(outcome.is_err());
         thread::sleep(Duration::from_millis(1500));
         assert!(!marker.exists());
     }

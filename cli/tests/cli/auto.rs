@@ -1,7 +1,8 @@
 use crate::common::{script, Repo};
 use crate::run::{
-    base_advanced, check_runs, counted_check, gh_log, main_published, manifest_set, models_used,
-    origin, run_with, set_manifest, tools, transcript_keep, BuildCommits, Fakes, FAIL,
+    base_advanced, check_runs, counted_check, gate_on_heartbeat, gh_log, main_published,
+    manifest_set, models_used, origin, run_with, set_manifest, tools, transcript_keep,
+    BuildCommits, Fakes, FAIL,
 };
 
 use std::time::Duration;
@@ -159,6 +160,22 @@ fn auto_triages_the_untriaged_unit_then_runs_it() {
             "issue edit 5 --add-label status:in-progress --remove-label status:ready-for-agent",
             "issue edit 5 --remove-label status:in-progress",
         ]
+    );
+}
+
+#[test]
+fn auto_gives_each_unit_the_heartbeat_option() {
+    let repo = Repo::new();
+    let bin = repo.path.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    gate_on_heartbeat(&repo);
+    let out = auto(&repo, &Fakes::passing(), &["--heartbeat-seconds", "1"]).success();
+    assert!(
+        events(&out)
+            .iter()
+            .any(|e| e["heartbeat"] == "build" && e["last_tool"].is_null()),
+        "{:?}",
+        events(&out)
     );
 }
 

@@ -156,6 +156,7 @@ pub struct Usage {
     pub tokens: Option<Tokens>,
 }
 
+#[derive(Clone)]
 pub struct Task {
     /// Where the session works.
     pub dir: PathBuf,
@@ -168,6 +169,62 @@ pub struct Task {
     pub timeout: Duration,
     /// The session to carry on, by the id its reply gave. `None` starts a new one.
     pub resume: Option<String>,
+    /// Where the session says it started, ended and is still working. `None` says nothing.
+    pub events: Option<Events>,
+}
+
+/// Each kind of token a session used, kept apart and never summed. `None` for a kind that could
+/// not be read, which is not the same as 0.
+#[derive(Debug, PartialEq, Default)]
+pub struct Kinds {
+    pub input: Option<u64>,
+    pub output: Option<u64>,
+    pub cache_read: Option<u64>,
+    pub cache_write: Option<u64>,
+}
+
+/// Where a session reports to, and what it reports about. It knows the shape of the lines `ns`
+/// prints; a harness only says what it read from its session.
+#[derive(Clone)]
+pub struct Events {
+    /// The unit's number, as the other events print it: a string.
+    pub unit: String,
+    pub state: String,
+    /// The number of the first session the task runs, the number its transcript is kept under. A
+    /// session started again after a bad moment has the next one, and the sessions are kept in
+    /// that order. A session that ended on a usage limit is not kept, so the session that starts
+    /// in its place has its number again.
+    pub first: usize,
+    /// How often a heartbeat is sent while the session runs. Zero sends none.
+    pub heartbeat: Duration,
+    /// Takes each event as a JSON object.
+    pub emit: std::rc::Rc<dyn Fn(serde_json::Value)>,
+}
+
+impl Events {
+    pub fn session_start(&self, n: usize, model: Option<&str>) {
+        (self.emit)(serde_json::json!({
+            "unit": self.unit, "session": "start", "state": self.state, "n": n, "model": model
+        }));
+    }
+
+    pub fn session_end(&self, n: usize, ran: Duration, tokens: &Kinds) {
+        (self.emit)(serde_json::json!({
+            "unit": self.unit, "session": "end", "state": self.state, "n": n,
+            "seconds": ran.as_secs(),
+            "tokens": {
+                "input": tokens.input, "output": tokens.output,
+                "cache_read": tokens.cache_read, "cache_write": tokens.cache_write
+            }
+        }));
+    }
+
+    pub fn heartbeat_send(&self, ran: Duration, last_tool: Option<&str>) {
+        (self.emit)(serde_json::json!({
+            "unit": self.unit, "heartbeat": self.state, "seconds": ran.as_secs(),
+            "last_tool": last_tool
+        }));
+    }
 }
 
 /// How a batch of sessions runs.

@@ -14,7 +14,21 @@ use chrono::{DateTime, Local, NaiveTime};
 pub trait Os {
     /// Starts `cmd` and waits for it, at most `timeout`. A piped stdin is fed `input` and closed;
     /// a piped stdout is collected. A child out of time is killed with everything it started.
-    fn process_run(&self, cmd: Command, input: &[u8], timeout: Duration) -> Result<Finished>;
+    fn process_run(&self, cmd: Command, input: &[u8], timeout: Duration) -> Result<Finished> {
+        self.process_stream(cmd, input, timeout, Duration::ZERO, &mut |_| {})
+    }
+
+    /// Like [`Os::process_run`], and `on` is called for each line of a piped stdout when it
+    /// arrives, and with the time since the start every `tick` while the child runs (`tick` zero:
+    /// never). The whole stdout is still collected in the result.
+    fn process_stream(
+        &self,
+        cmd: Command,
+        input: &[u8],
+        timeout: Duration,
+        tick: Duration,
+        on: &mut dyn FnMut(Streamed),
+    ) -> Result<Finished>;
 
     /// Starts `cmd` on the user's terminal and waits for it. The user works with it, so it has no
     /// time limit. Returns whether it exited with success.
@@ -73,6 +87,14 @@ pub enum RunnerState {
     Current,
     /// Installed, and it differs from what `ns runner install` would write now.
     Differs,
+}
+
+/// What happens while a child runs.
+pub enum Streamed<'a> {
+    /// A line of stdout, with its newline when it has one.
+    Line(&'a [u8]),
+    /// The child has run this long.
+    Tick(Duration),
 }
 
 pub struct Finished {

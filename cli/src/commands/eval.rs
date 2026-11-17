@@ -478,6 +478,7 @@ fn verify_measure(
                         model: limits.model.map(str::to_string),
                         timeout: limits.timeout,
                         resume: None,
+                        events: None,
                     });
                     // `tmp` is deleted here, whatever the reply was.
                     match reply {
@@ -538,6 +539,7 @@ fn review_measure(
                         model: limits.model.map(str::to_string),
                         timeout: limits.timeout,
                         resume: None,
+                        events: None,
                     });
                     match reply {
                         Ok(reply) if reply.success => verdict::parse(&reply.text),

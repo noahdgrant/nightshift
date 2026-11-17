@@ -50,6 +50,7 @@ pub fn unit_plan(
         model: None,
         timeout,
         resume: None,
+        events: None,
     })?;
     if !reply.success {
         bail!("the harness did not finish planning unit {number}");
