@@ -2,13 +2,13 @@ use std::cell::RefCell;
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use chrono::{Local, TimeZone};
 
 use super::{Harness, Message, Reply, Task, TimedOut, Usage, UsageLimit};
-use crate::os::Os;
+use crate::os::{Os, Streamed};
 use crate::retry;
 
 mod transcript;
@@ -119,7 +119,9 @@ impl Claude {
         Ok(cmd)
     }
 
-    fn session_run(&self, task: &Task) -> Result<Reply> {
+    /// Runs session number `n` of the task, telling `task.events` when it starts, while it runs
+    /// and when it ends, however it ends.
+    fn session_run(&self, task: &Task, n: usize) -> Result<Reply> {
         let mut cmd = self.command()?;
         // The stream carries the tool calls and results; `--verbose` is what `claude` requires of
         // `stream-json` in a headless session.
@@ -140,10 +142,44 @@ impl Claude {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
-        let done = self
-            .os
-            .process_run(cmd, task.prompt.as_bytes(), task.timeout)
-            .context("cannot run claude")?;
+        let started = Instant::now();
+        if let Some(ev) = &task.events {
+            ev.session_start(n, task.model.as_deref());
+        }
+        let last_tool: RefCell<Option<String>> = RefCell::new(None);
+        let tick = task
+            .events
+            .as_ref()
+            .map_or(Duration::ZERO, |ev| ev.heartbeat);
+        let done = self.os.process_stream(
+            cmd,
+            task.prompt.as_bytes(),
+            task.timeout,
+            tick,
+            &mut |event| match (event, &task.events) {
+                (Streamed::Line(line), _) => {
+                    if let Some(tool) = transcript::tool_name(line) {
+                        *last_tool.borrow_mut() = Some(tool);
+                    }
+                }
+                (Streamed::Tick(elapsed), Some(ev)) => {
+                    ev.heartbeat_send(elapsed, last_tool.borrow().as_deref())
+                }
+                (Streamed::Tick(_), None) => {}
+            },
+        );
+        if let Some(ev) = &task.events {
+            let stdout = done
+                .as_ref()
+                .map(|d| d.stdout.as_slice())
+                .unwrap_or_default();
+            ev.session_end(
+                n,
+                started.elapsed(),
+                &transcript::kinds(&String::from_utf8_lossy(stdout)),
+            );
+        }
+        let done = done.context("cannot run claude")?;
         if done.success.is_none() {
             return Err(TimedOut {
                 seconds: task.timeout.as_secs(),
@@ -243,9 +279,14 @@ impl Harness for Claude {
     fn task_run(&self, task: &Task) -> Result<Reply> {
         let earlier = RefCell::new(Vec::new());
         let attempts = std::cell::Cell::new(0);
+        let sessions = std::cell::Cell::new(0);
         let mut result = retry::retry(
             self.retry_delay,
-            || self.session_run(task),
+            || {
+                let n = task.events.as_ref().map_or(0, |ev| ev.first) + sessions.get();
+                sessions.set(sessions.get() + 1);
+                self.session_run(task, n)
+            },
             |r| match r {
                 // A usage limit is no bad moment, and its text may hold a word of `TRANSIENT`.
                 Ok(reply) if usage_limit_find(reply).is_some() => None,
@@ -284,6 +325,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::harness::Events;
 
     /// A stand-in for `claude` that prints its arguments, then the prompt it was sent.
     fn fake(dir: &Path, exit: i32) -> Claude {
@@ -301,6 +343,7 @@ mod tests {
             model: Some("opus".into()),
             timeout: Duration::from_secs(30),
             resume: None,
+            events: None,
         }
     }
 
@@ -636,5 +679,210 @@ mod tests {
             .unwrap();
         assert!(reply.success);
         assert_eq!(sessions(tmp.path()), 3);
+    }
+
+    type Seen = std::rc::Rc<RefCell<Vec<serde_json::Value>>>;
+
+    fn events(heartbeat: Duration) -> (Events, Seen) {
+        events_hooked(heartbeat, |_| {})
+    }
+
+    /// Events that are kept, and shown to `hook` as each one happens.
+    fn events_hooked(
+        heartbeat: Duration,
+        hook: impl Fn(&serde_json::Value) + 'static,
+    ) -> (Events, Seen) {
+        let seen: Seen = Default::default();
+        let sink = seen.clone();
+        let ev = Events {
+            unit: "7".into(),
+            state: "build".into(),
+            first: 3,
+            heartbeat,
+            emit: std::rc::Rc::new(move |e| {
+                hook(&e);
+                sink.borrow_mut().push(e)
+            }),
+        };
+        (ev, seen)
+    }
+
+    const USED: &str = concat!(
+        r#"{"type":"assistant","message":{"id":"a","model":"m","usage":{"input_tokens":4,"output_tokens":2,"cache_read_input_tokens":1,"cache_creation_input_tokens":5},"content":[{"type":"tool_use","name":"Read"}]}}"#,
+        "\n",
+        r#"{"type":"result","result":"ok"}"#
+    );
+
+    #[test]
+    fn a_session_prints_start_then_end_with_each_kind_of_token() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let (ev, seen) = events(Duration::ZERO);
+        let mut t = task(tmp.path(), true);
+        t.events = Some(ev);
+        streaming(tmp.path(), USED, "").task_run(&t).unwrap();
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(
+            seen[0],
+            serde_json::json!({"unit":"7","session":"start","state":"build","n":3,"model":"opus"})
+        );
+        assert_eq!(seen[1]["session"], "end");
+        assert_eq!(seen[1]["n"], 3);
+        assert_eq!(
+            seen[1]["tokens"],
+            serde_json::json!({"input":4,"output":2,"cache_read":1,"cache_write":5})
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_usage_ends_with_null_tokens_and_a_null_model_when_default() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let (ev, seen) = events(Duration::ZERO);
+        let mut t = task(tmp.path(), true);
+        t.model = None;
+        t.events = Some(ev);
+        streaming(tmp.path(), STREAM, "").task_run(&t).unwrap();
+        let seen = seen.borrow();
+        assert!(seen[0]["model"].is_null());
+        assert_eq!(
+            seen[1]["tokens"],
+            serde_json::json!({"input":null,"output":null,"cache_read":null,"cache_write":null})
+        );
+    }
+
+    #[test]
+    fn a_session_out_of_time_still_prints_its_end_line() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let (ev, seen) = events(Duration::ZERO);
+        let mut late = task(tmp.path(), true);
+        late.timeout = Duration::from_secs(1);
+        late.events = Some(ev);
+        streaming(tmp.path(), USED, "exec sleep 30")
+            .task_run(&late)
+            .unwrap_err();
+        let seen = seen.borrow();
+        assert_eq!(
+            seen.iter()
+                .map(|e| e["session"].clone())
+                .collect::<Vec<_>>(),
+            ["start", "end"]
+        );
+        assert_eq!(seen[1]["tokens"]["input"], 4);
+    }
+
+    #[test]
+    fn a_session_that_cannot_start_still_prints_its_end_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ev, seen) = events(Duration::ZERO);
+        let mut t = task(tmp.path(), true);
+        t.events = Some(ev);
+        let missing = Claude::with_program(tmp.path().join("nope"), crate::os::get());
+        assert!(missing.task_run(&t).is_err());
+        assert_eq!(seen.borrow().len(), 2);
+        assert_eq!(seen.borrow()[1]["session"], "end");
+    }
+
+    #[test]
+    fn a_usage_limit_session_prints_an_end_line_with_its_number() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let (ev, seen) = events(Duration::ZERO);
+        let mut t = task(tmp.path(), true);
+        t.events = Some(ev);
+        let limit = r#"{"type":"result","is_error":true,"result":"Claude AI usage limit reached|1900000000"}"#;
+        let err = streaming(tmp.path(), limit, "exit 1")
+            .task_run(&t)
+            .unwrap_err();
+        assert!(err.downcast_ref::<UsageLimit>().is_some());
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1]["session"], "end");
+        assert_eq!(seen[1]["n"], 3);
+        assert!(seen[1]["seconds"].is_u64());
+    }
+
+    #[test]
+    fn each_retried_session_prints_its_own_lines_with_the_next_number() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let (ev, seen) = events(Duration::ZERO);
+        let mut t = task(tmp.path(), true);
+        t.events = Some(ev);
+        flaky(tmp.path(), 1, "API Error: 529 Overloaded")
+            .task_run(&t)
+            .unwrap();
+        let shown: Vec<_> = seen
+            .borrow()
+            .iter()
+            .map(|e| format!("{} {}", e["session"], e["n"]))
+            .collect();
+        assert_eq!(
+            shown,
+            [r#""start" 3"#, r#""end" 3"#, r#""start" 4"#, r#""end" 4"#]
+        );
+    }
+
+    #[test]
+    fn a_kind_the_stream_does_not_report_is_null_in_the_end_line() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let (ev, seen) = events(Duration::ZERO);
+        let mut t = task(tmp.path(), true);
+        t.events = Some(ev);
+        let partial = r#"{"type":"assistant","message":{"id":"a","usage":{"input_tokens":4,"output_tokens":2},"content":[]}}"#;
+        streaming(tmp.path(), partial, "").task_run(&t).unwrap();
+        assert_eq!(
+            seen.borrow()[1]["tokens"],
+            serde_json::json!({"input":4,"output":2,"cache_read":null,"cache_write":null})
+        );
+    }
+
+    #[test]
+    fn heartbeats_name_the_last_tool_and_stop_when_the_session_ends() {
+        let _spawn = crate::testutil::spawning();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("claude");
+        let line =
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#;
+        // The stand-in goes on only when the test has seen what it waits for: a heartbeat with no
+        // tool, then one naming the tool the stand-in ran. No step depends on the clock.
+        let dir = tmp.path().to_path_buf();
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\nwhile [ ! -e '{d}/go1' ]; do sleep 0.05; done\necho '{line}'\nwhile [ ! -e '{d}/go2' ]; do sleep 0.05; done\n",
+                d = dir.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (ev, seen) = events_hooked(Duration::from_millis(100), move |e| {
+            if e["heartbeat"] == "build" {
+                let go = if e["last_tool"].is_null() {
+                    "go1"
+                } else {
+                    "go2"
+                };
+                std::fs::write(dir.join(go), "").unwrap();
+            }
+        });
+        let mut t = task(tmp.path(), true);
+        t.events = Some(ev);
+        Claude::with_program(path, crate::os::get())
+            .task_run(&t)
+            .unwrap();
+        let seen = seen.borrow();
+        let tools: Vec<_> = seen
+            .iter()
+            .filter(|e| e.get("heartbeat").is_some())
+            .map(|e| e["last_tool"].clone())
+            .collect();
+        assert_eq!(tools.first().unwrap(), &serde_json::Value::Null);
+        assert_eq!(tools.last().unwrap(), "Bash");
+        assert_eq!(seen[0]["session"], "start");
+        assert_eq!(seen.last().unwrap()["session"], "end");
     }
 }

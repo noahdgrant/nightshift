@@ -337,6 +337,7 @@ pub fn run(forge: &dyn Forge, harness: &dyn Harness, root: &Path, request: &Requ
             model: request.sessions.model.map(str::to_string),
             timeout: request.sessions.timeout,
             resume: None,
+            events: None,
         })
         .map_err(harness::session_failed)?;
     if !reply.success {

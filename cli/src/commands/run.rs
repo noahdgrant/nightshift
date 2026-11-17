@@ -73,6 +73,9 @@ pub struct Options {
     /// `.nightshift/nightshift.toml` names.
     #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub model: Option<String>,
+    /// How often, while a harness session runs, to print a heartbeat. 0 prints none.
+    #[arg(long, default_value_t = 60)]
+    pub heartbeat_seconds: u64,
 }
 
 impl Args {
@@ -164,6 +167,7 @@ pub fn run(args: Args) -> Result<()> {
         checks_timeout: Duration::from_secs(args.options.checks_timeout_seconds),
         model: args.options.model.clone(),
         until: args.until,
+        heartbeat: Duration::from_secs(args.options.heartbeat_seconds),
     };
     let planned = match resume {
         Resume::Fresh => State::START,
@@ -685,6 +689,25 @@ mod tests {
     use super::*;
     use crate::states::verdict::Verdict;
     use crate::states::{Facts, SessionVerdict};
+
+    fn heartbeat_parse(extra: &[&str]) -> u64 {
+        #[derive(clap::Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            options: Options,
+        }
+        let args = ["ns"].into_iter().chain(extra.iter().copied());
+        clap::Parser::try_parse_from(args)
+            .map(|w: Wrap| w.options.heartbeat_seconds)
+            .unwrap()
+    }
+
+    #[test]
+    fn the_heartbeat_is_every_60_seconds_unless_told_otherwise_and_0_turns_it_off() {
+        assert_eq!(heartbeat_parse(&[]), 60);
+        assert_eq!(heartbeat_parse(&["--heartbeat-seconds", "5"]), 5);
+        assert_eq!(heartbeat_parse(&["--heartbeat-seconds", "0"]), 0);
+    }
 
     fn moves(unit_outcomes: impl FnMut(State, u32) -> Outcome) -> (Vec<String>, bool) {
         moves_with(2, unit_outcomes)

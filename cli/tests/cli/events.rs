@@ -13,8 +13,9 @@ use crate::auto::{
 use crate::common::Repo;
 use crate::log::{kept, log};
 use crate::run::{
-    finished_then, forge_mark, lines, manifest_set, open_behind, run, run_args, run_with,
-    stuck_with_person_opened_change_request, tools, BuildCommits, Fakes, FAIL, OPEN_BLOCKER,
+    finished_then, forge_mark, gate_on_heartbeat, lines, manifest_set, open_behind, run, run_args,
+    run_with, stuck_with_person_opened_change_request, tools, BuildCommits, Fakes, FAIL,
+    OPEN_BLOCKER,
 };
 
 /// A line `ns` printed, and the command that printed it.
@@ -71,6 +72,9 @@ fn event_of(command: &str, line: &Value) -> Option<String> {
             _ if has("waiting") => "waiting",
             _ if has("not_merged") => "not_merged",
             _ if has("stopped") => return Some("ns run: stopped".to_string()),
+            _ if line["session"] == "start" => "session start",
+            _ if line["session"] == "end" => "session end",
+            _ if has("heartbeat") => "heartbeat",
             _ if has("from") => "move",
             _ if has("state") => "state",
             _ => return None,
@@ -160,6 +164,14 @@ fn run_scenarios() -> Vec<Vec<Seen>> {
     let repo = Repo::new();
     let path = tools(&repo, &Fakes::passing());
     all.push(run_out("run", run(&repo, &path)));
+    // A build session held until a heartbeat is printed.
+    let repo = Repo::new();
+    let path = tools(&repo, &Fakes::passing());
+    gate_on_heartbeat(&repo);
+    all.push(run_out(
+        "run",
+        run_with(&repo, &path, &["--heartbeat-seconds", "1"]),
+    ));
     let repo = Repo::new();
     let failing = Fakes {
         verdict: FAIL,

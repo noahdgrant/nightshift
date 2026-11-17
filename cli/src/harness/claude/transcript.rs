@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::harness::{Message, Tokens, Usage};
+use crate::harness::{Kinds, Message, Tokens, Usage};
 
 /// The longest a tool call's input or a tool result is shown.
 const SHORT: usize = 200;
@@ -24,14 +24,10 @@ pub fn session_find(raw: &str) -> Option<String> {
         .and_then(|event| event["session_id"].as_str().map(String::from))
 }
 
-/// The model and the summed tokens of the stream's assistant messages. A message is printed once
-/// for each content block it holds, all with its id, so the last copy of an id is the one counted.
-/// The model is the first one named (`<synthetic>` stands for no model); `None` for what no
-/// message says.
-pub fn usage(raw: &str) -> Usage {
-    let mut counted: Vec<(Option<String>, Tokens)> = Vec::new();
+/// The model of the stream, and the tokens of each of its assistant messages that reports usage.
+fn token_messages(raw: &str) -> (Option<String>, Vec<Kinds>) {
+    let mut counted: Vec<(Option<String>, Kinds)> = Vec::new();
     let mut model = None;
-    let mut seen = false;
     for event in raw
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
@@ -47,9 +43,8 @@ pub fn usage(raw: &str) -> Usage {
         let Some(usage) = message["usage"].as_object() else {
             continue;
         };
-        seen = true;
-        let n = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
-        let tokens = Tokens {
+        let n = |key: &str| usage.get(key).and_then(Value::as_u64);
+        let kinds = Kinds {
             input: n("input_tokens"),
             output: n("output_tokens"),
             cache_read: n("cache_read_input_tokens"),
@@ -57,21 +52,60 @@ pub fn usage(raw: &str) -> Usage {
         };
         let id = message["id"].as_str().map(String::from);
         match counted.iter_mut().find(|(i, _)| id.is_some() && *i == id) {
-            Some(slot) => slot.1 = tokens,
-            None => counted.push((id, tokens)),
+            Some(slot) => slot.1 = kinds,
+            None => counted.push((id, kinds)),
         }
     }
-    let tokens = seen.then(|| {
+    (model, counted.into_iter().map(|(_, k)| k).collect())
+}
+
+/// The tokens of the stream (a message is printed once for each content block it holds, all with
+/// its id, so the last copy of an id is the one counted), each kind summed on its own: `None` for a kind that no message
+/// reports, which is not the same as a total of 0.
+pub fn kinds(raw: &str) -> Kinds {
+    let counted = token_messages(raw).1;
+    let sum = |f: fn(&Kinds) -> Option<u64>| {
         counted
             .iter()
-            .fold(Tokens::default(), |sum, (_, t)| Tokens {
-                input: sum.input + t.input,
-                output: sum.output + t.output,
-                cache_read: sum.cache_read + t.cache_read,
-                cache_write: sum.cache_write + t.cache_write,
-            })
+            .filter_map(f)
+            .fold(None, |sum, n| Some(sum.unwrap_or(0) + n))
+    };
+    Kinds {
+        input: sum(|k| k.input),
+        output: sum(|k| k.output),
+        cache_read: sum(|k| k.cache_read),
+        cache_write: sum(|k| k.cache_write),
+    }
+}
+
+/// The model and the summed tokens of the stream's assistant messages. The model is the first one
+/// named (`<synthetic>` stands for no model); `None` for what no message says.
+pub fn usage(raw: &str) -> Usage {
+    let (model, messages) = token_messages(raw);
+    let tokens = (!messages.is_empty()).then(|| {
+        let total = |f: fn(&Kinds) -> Option<u64>| messages.iter().filter_map(f).sum();
+        Tokens {
+            input: total(|k| k.input),
+            output: total(|k| k.output),
+            cache_read: total(|k| k.cache_read),
+            cache_write: total(|k| k.cache_write),
+        }
     });
     Usage { model, tokens }
+}
+
+/// The name of the last tool the assistant calls in one line of the stream, `None` for a line
+/// that calls none or is not an event.
+pub fn tool_name(line: &[u8]) -> Option<String> {
+    let event: Value = serde_json::from_slice(line).ok()?;
+    if event["type"] != "assistant" {
+        return None;
+    }
+    event["message"]["content"]
+        .as_array()?
+        .iter()
+        .rfind(|block| block["type"] == "tool_use")
+        .and_then(|block| block["name"].as_str().map(String::from))
 }
 
 /// The stream's messages, in order: what the agent said, each tool call and each tool result. A
@@ -193,6 +227,38 @@ mod tests {
                 }),
             }
         );
+    }
+
+    #[test]
+    fn a_kind_no_message_reports_is_none_and_never_a_zero() {
+        let raw = r#"{"type":"assistant","message":{"id":"a","usage":{"input_tokens":4,"output_tokens":0,"cache_read_input_tokens":2}}}
+{"type":"assistant","message":{"id":"b","usage":{"input_tokens":1,"output_tokens":3}}}
+"#;
+        assert_eq!(
+            kinds(raw),
+            Kinds {
+                input: Some(5),
+                output: Some(3),
+                cache_read: Some(2),
+                cache_write: None
+            }
+        );
+        assert_eq!(kinds("not json"), Kinds::default());
+    }
+
+    #[test]
+    fn a_tool_call_line_gives_the_name_of_its_last_tool() {
+        let line = br#"{"type":"assistant","message":{"content":[{"type":"text","text":"x"},{"type":"tool_use","name":"Read"},{"type":"tool_use","name":"Bash"}]}}"#;
+        assert_eq!(tool_name(line).as_deref(), Some("Bash"));
+        assert_eq!(
+            tool_name(br#"{"type":"assistant","message":{"content":[]}}"#),
+            None
+        );
+        assert_eq!(
+            tool_name(br#"{"type":"user","message":{"content":[{"type":"tool_use","name":"X"}]}}"#),
+            None
+        );
+        assert_eq!(tool_name(b"not json\n"), None);
     }
 
     #[test]

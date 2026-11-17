@@ -33,19 +33,24 @@ impl Transcripts {
         })
     }
 
-    /// Keeps `raw` as the next session of `state` for `unit`, with the `model` it ran with.
-    pub fn keep(&self, unit: &str, state: State, raw: &[u8], model: Option<&str>) -> Result<()> {
-        let dir = self.dir.join(unit);
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("cannot create {}", dir.display()))?;
-        let n = self
+    /// The number the next session of `state` for `unit` is kept under.
+    pub fn next(&self, unit: &str, state: State) -> Result<usize> {
+        Ok(self
             .sessions(unit)?
             .iter()
             .filter(|s| s.state == state)
             .map(|s| s.n)
             .max()
             .unwrap_or(0)
-            + 1;
+            + 1)
+    }
+
+    /// Keeps `raw` as the next session of `state` for `unit`, with the `model` it ran with.
+    pub fn keep(&self, unit: &str, state: State, raw: &[u8], model: Option<&str>) -> Result<()> {
+        let dir = self.dir.join(unit);
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("cannot create {}", dir.display()))?;
+        let n = self.next(unit, state)?;
         let path = dir.join(format!("{state}-{n}.jsonl"));
         std::fs::write(&path, raw).with_context(|| format!("cannot write {}", path.display()))?;
         if let Some(model) = model {

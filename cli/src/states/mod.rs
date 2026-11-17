@@ -19,16 +19,19 @@ pub fn rounds_so_far(dir: &std::path::Path, unit: &str, kind: &str) -> usize {
     rounds::Rounds::new(dir, unit, kind).so_far()
 }
 
+use std::io::Write;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::Result;
 use chrono::{DateTime, Local};
 
 use crate::forge::Forge;
-use crate::harness::{self, Harness, Reply, Task, TimedOut};
+use crate::harness::{self, Events, Harness, Reply, Task, TimedOut};
 use crate::manifest::{self, Place};
 use crate::os::Os;
+use crate::runlog::RunLog;
 use crate::state::{Outcome, State};
 use crate::transcripts::Transcripts;
 use crate::vcs::Vcs;
@@ -58,6 +61,8 @@ pub struct Context {
     /// The moment `ns auto` stops, when it was told one. A usage limit that resets after it is
     /// not waited for.
     pub until: Option<DateTime<Local>>,
+    /// How often a running session says it is alive. Zero says nothing until it ends.
+    pub heartbeat: Duration,
 }
 
 impl Context {
@@ -174,6 +179,24 @@ pub(crate) fn session_run(ctx: &Context, state: State, task: &Task) -> Result<Re
     let root = ctx.vcs.root_find(&ctx.from)?;
     let kept = Transcripts::open(ctx.vcs.as_ref(), &root)?;
     let unit = ctx.unit.to_string();
+    // What a session says is printed as it happens and kept in the run log like a move.
+    let log = RunLog::open(ctx.vcs.as_ref(), &root)?;
+    let first = kept.next(&unit, state)?;
+    let mut task = task.clone();
+    task.events = Some(Events {
+        unit: unit.clone(),
+        state: state.to_string(),
+        first,
+        heartbeat: ctx.heartbeat,
+        emit: Rc::new(move |event| {
+            // A reader that went away must not stop the session, so a failed write is ignored.
+            let _ = writeln!(std::io::stdout(), "{event}");
+            if let Err(e) = log.append(&event) {
+                eprintln!("ns: cannot log an event: {e:#}");
+            }
+        }),
+    });
+    let task = &task;
     // A usage limit that says when it resets is waited out here, so the state goes on in place.
     let ran = harness::usage_limit_wait(
         ctx.until,
@@ -236,7 +259,14 @@ mod tests {
     struct Clock(Rc<RefCell<Vec<Duration>>>);
 
     impl Os for Clock {
-        fn process_run(&self, _: Command, _: &[u8], _: Duration) -> Result<Finished> {
+        fn process_stream(
+            &self,
+            _: Command,
+            _: &[u8],
+            _: Duration,
+            _: Duration,
+            _: &mut dyn FnMut(crate::os::Streamed),
+        ) -> Result<Finished> {
             unreachable!()
         }
         fn process_interact(&self, _: Command) -> Result<bool> {
@@ -266,7 +296,7 @@ mod tests {
     }
 
     /// A harness that hits a usage limit resetting at 13:00 once, then passes.
-    struct Limited(Rc<Cell<u32>>);
+    struct Limited(Rc<Cell<u32>>, Rc<RefCell<Vec<usize>>>);
 
     impl Harness for Limited {
         fn version_get(&self) -> Result<String> {
@@ -278,8 +308,15 @@ mod tests {
         fn session_start_hook_install(&self, _: &std::path::Path, _: &str) -> Result<bool> {
             unreachable!()
         }
-        fn task_run(&self, _: &Task) -> Result<Reply> {
+        fn task_run(&self, task: &Task) -> Result<Reply> {
             self.0.set(self.0.get() + 1);
+            let ev = task.events.as_ref().expect("a state's session has events");
+            (ev.emit)(
+                serde_json::json!({"unit": ev.unit, "session": "start", "state": ev.state, "n": ev.first}),
+            );
+            // What the run log holds while the session is still running.
+            let log = RunLog::open(crate::vcs::get().as_ref(), &task.dir).unwrap();
+            self.1.borrow_mut().push(log.events().unwrap().len());
             if self.0.get() == 1 {
                 return Err(UsageLimit {
                     resets: Some(at(13)),
@@ -322,10 +359,15 @@ mod tests {
         git(&["init", "-q"]);
         let slept = Rc::new(RefCell::new(Vec::new()));
         let calls = Rc::new(Cell::new(0));
+        let logged = Rc::new(RefCell::new(Vec::new()));
+        // Two sessions of the state are already kept, so the next is number 3.
+        let kept = Transcripts::open(crate::vcs::get().as_ref(), repo.path()).unwrap();
+        kept.keep("7", State::Build, b"{}", None).unwrap();
+        kept.keep("7", State::Build, b"{}", None).unwrap();
         let ctx = Context {
             vcs: crate::vcs::get(),
             forge: crate::forge::get(),
-            harness: Box::new(Limited(calls.clone())),
+            harness: Box::new(Limited(calls.clone(), logged.clone())),
             os: Box::new(Clock(slept.clone())),
             from: repo.path().to_path_buf(),
             unit: 7,
@@ -342,6 +384,7 @@ mod tests {
             checks_timeout: Duration::from_secs(1),
             model: None,
             until: None,
+            heartbeat: Duration::ZERO,
         };
         let task = Task {
             dir: repo.path().to_path_buf(),
@@ -350,10 +393,20 @@ mod tests {
             model: None,
             timeout: Duration::from_secs(1),
             resume: None,
+            events: None,
         };
         let reply = session_run(&ctx, State::Build, &task).unwrap();
         assert_eq!(reply.text, "done");
         assert_eq!(calls.get(), 2);
         assert_eq!(*slept.borrow(), [Duration::from_secs(3 * 3600)]);
+        // Each session's start was in the run log while the session still ran, not after it.
+        assert_eq!(*logged.borrow(), [1, 2]);
+        let log = RunLog::open(ctx.vcs.as_ref(), repo.path()).unwrap();
+        let events = log.events().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["session"], "start");
+        assert_eq!(events[0]["state"], "build");
+        assert_eq!(events[0]["unit"], "7");
+        assert_eq!(events[0]["n"], 3);
     }
 }

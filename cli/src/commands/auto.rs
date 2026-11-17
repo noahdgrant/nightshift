@@ -568,7 +568,14 @@ mod tests {
     struct Clock(Cell<DateTime<Local>>);
 
     impl Os for Clock {
-        fn process_run(&self, _: Command, _: &[u8], _: Duration) -> Result<Finished> {
+        fn process_stream(
+            &self,
+            _: Command,
+            _: &[u8],
+            _: Duration,
+            _: Duration,
+            _: &mut dyn FnMut(crate::os::Streamed),
+        ) -> Result<Finished> {
             unreachable!()
         }
         fn process_interact(&self, _: Command) -> Result<bool> {

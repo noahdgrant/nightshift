@@ -296,7 +296,7 @@ case "$p" in
 *"The checks failed:"*) touch "{bin}/fixed"; echo fixed it;;
 *"left uncommitted changes"*) {when_told}echo committed when told;;
 *"commits on the branch"*|*"Squash them into one commit"*) {squash}echo squashed when told;;
-*) {limited}{drop}printf %s "$p" > "{bin}/build.prompt"; mkdir -p "$(dirname '{builds}')"; printf %s '{content}' > '{builds}'; {run_checks}{commit}{built};;
+*) if [ -e "{bin}/gate" ]; then log="$(cat "{bin}/gate")"; i=0; while [ $i -lt 600 ] && ! grep -q '"heartbeat"' "$log" 2>/dev/null; do i=$((i+1)); sleep 0.05; done; fi; {limited}{drop}printf %s "$p" > "{bin}/build.prompt"; mkdir -p "$(dirname '{builds}')"; printf %s '{content}' > '{builds}'; {run_checks}{commit}{built};;
 esac
 exit {exit}"#,
             bin = bin.display(),
@@ -606,12 +606,12 @@ fn moves(out: Vec<u8>) -> Vec<String> {
     String::from_utf8(out)
         .unwrap()
         .lines()
-        .map(|l| {
-            let v: serde_json::Value = serde_json::from_str(l).unwrap();
-            match v.get("to") {
-                Some(to) => format!("{}>{}", v["from"].as_str().unwrap(), to.as_str().unwrap()),
-                None => format!("start {}", v["state"].as_str().unwrap()),
-            }
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        // A harness session's own lines are not moves or states.
+        .filter(|v| v.get("session").is_none() && v.get("heartbeat").is_none())
+        .map(|v| match v.get("to") {
+            Some(to) => format!("{}>{}", v["from"].as_str().unwrap(), to.as_str().unwrap()),
+            None => format!("start {}", v["state"].as_str().unwrap()),
         })
         .collect()
 }
@@ -632,6 +632,132 @@ pub fn models_used(repo: &Repo, kind: &str) -> Vec<String> {
 
 fn read(repo: &Repo, file: &str) -> String {
     std::fs::read_to_string(repo.workspace("5").join(".ns/5").join(file)).unwrap()
+}
+
+#[test]
+fn a_harness_session_prints_a_start_and_an_end_line_inside_its_state() {
+    let repo = Repo::new();
+    let out = run(&repo, &tools(&repo, &Fakes::passing()))
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let lines: Vec<serde_json::Value> = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let at = |pred: &dyn Fn(&serde_json::Value) -> bool| {
+        lines
+            .iter()
+            .position(pred)
+            .unwrap_or_else(|| panic!("{lines:?}"))
+    };
+    let state = at(&|v| v["to"] == "build");
+    let start = at(&|v| v["session"] == "start" && v["state"] == "build");
+    let end = at(&|v| v["session"] == "end" && v["state"] == "build");
+    let moved = at(&|v| v["from"] == "build");
+    assert!(state < start && start < end && end < moved, "{lines:?}");
+    assert!(lines[start]["model"].is_null());
+    assert!(lines[end]["seconds"].is_u64());
+    assert!(lines[end]["tokens"]["input"].is_null());
+    assert!(
+        lines.iter().all(|v| v.get("heartbeat").is_none()),
+        "fast fakes beat no heartbeat"
+    );
+}
+
+fn heartbeats_of(out: &[u8]) -> Vec<serde_json::Value> {
+    lines(out)
+        .into_iter()
+        .filter(|v| v.get("heartbeat").is_some())
+        .collect()
+}
+
+/// Makes the fake `claude` hold its build session until the run log holds a heartbeat line, so a
+/// test waits on the event and not on the clock.
+pub fn gate_on_heartbeat(repo: &Repo) {
+    let bin = repo.path.parent().unwrap().join("bin");
+    std::fs::write(
+        bin.join("gate"),
+        repo.path.join(".git/ns/runs.jsonl").display().to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_heartbeat_line_reaches_stdout_with_a_non_zero_flag() {
+    let repo = Repo::new();
+    let path = tools(&repo, &Fakes::passing());
+    gate_on_heartbeat(&repo);
+    let out = run_with(&repo, &path, &["--heartbeat-seconds", "1"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let beats = heartbeats_of(&out);
+    assert!(!beats.is_empty(), "{:?}", lines(&out));
+    assert_eq!(beats[0]["heartbeat"], "build");
+    assert!(beats[0]["last_tool"].is_null());
+}
+
+#[test]
+fn with_heartbeat_seconds_0_a_session_prints_start_and_end_but_no_heartbeat() {
+    let repo = Repo::new();
+    let path = tools(&repo, &Fakes::passing());
+    let out = run_with(&repo, &path, &["--heartbeat-seconds", "0"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let all = lines(&out);
+    assert!(heartbeats_of(&out).is_empty(), "{all:?}");
+    assert!(all
+        .iter()
+        .any(|v| v["session"] == "start" && v["state"] == "build"));
+    assert!(all
+        .iter()
+        .any(|v| v["session"] == "end" && v["state"] == "build"));
+}
+
+#[test]
+fn a_reader_that_goes_away_mid_session_does_not_stop_the_session_or_its_log() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command as Std, Stdio};
+    let repo = Repo::new();
+    let path = tools(&repo, &Fakes::passing());
+    gate_on_heartbeat(&repo);
+    let mut child = Std::new(assert_cmd::cargo::cargo_bin("ns"))
+        .args(["run", "5", "--gates", "auto", "--ci-poll-seconds", "0"])
+        .args(["--max-attempts", "2", "--heartbeat-seconds", "1"])
+        .env("PATH", path)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .current_dir(&repo.path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // Read up to the build session's start line, then close the read end while the session runs.
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    loop {
+        let mut line = String::new();
+        assert!(reader.read_line(&mut line).unwrap() > 0, "no start line");
+        if line.contains("\"session\":\"start\"") {
+            break;
+        }
+    }
+    drop(reader);
+    // The exit code is not asserted: a move printed after the pipe closed may still fail.
+    child.wait().unwrap();
+    let log = std::fs::read_to_string(repo.path.join(".git/ns/runs.jsonl")).unwrap();
+    assert!(log.contains("\"heartbeat\":\"build\""), "{log}");
+    assert!(
+        log.contains("\"session\":\"end\"") && log.contains("\"state\":\"build\""),
+        "{log}"
+    );
 }
 
 #[test]
@@ -1631,6 +1757,14 @@ pub fn lines(out: &[u8]) -> Vec<serde_json::Value> {
 }
 
 fn run_log(repo: &Repo) -> Vec<serde_json::Value> {
+    run_log_all(repo)
+        .into_iter()
+        .filter(|e| e.get("session").is_none() && e.get("heartbeat").is_none())
+        .collect()
+}
+
+/// The run log with the lines a harness session writes to it.
+fn run_log_all(repo: &Repo) -> Vec<serde_json::Value> {
     let path = repo.path.join(".git/ns/runs.jsonl");
     lines(&std::fs::read(path).unwrap_or_default())
 }
