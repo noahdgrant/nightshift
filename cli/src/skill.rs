@@ -248,6 +248,42 @@ mod tests {
     }
 
     #[test]
+    fn the_cli_design_skill_is_short_may_start_on_its_own_and_states_each_rule() {
+        let text = embedded()
+            .iter()
+            .find(|(n, _)| *n == "ns-cli-design")
+            .unwrap()
+            .1;
+        assert!(text.lines().count() <= 60);
+        assert!(!file_for_session("ns-cli-design", text).contains("disable-model-invocation"));
+        for needed in [
+            "## Architecture",
+            "## Shape: noun verb",
+            "## Output",
+            "## Exit codes",
+            "## Usage",
+            "## Changing a command",
+            "`tool noun verb [object] [flags]`",
+            "stdout is the answer",
+            "A flag changes how, never what.",
+            "**A flag is never required.**",
+            "`NO_COLOR`",
+            "`--dry-run`",
+        ] {
+            assert!(text.contains(needed), "{needed}");
+        }
+    }
+
+    #[test]
+    fn build_and_review_name_the_cli_design_skill() {
+        for name in [BUILD, REVIEW] {
+            let file = format!("{}/../skills/{name}/SKILL.md", env!("CARGO_MANIFEST_DIR"));
+            let skill = std::fs::read_to_string(file).unwrap();
+            assert!(skill.contains("`ns-cli-design`"), "{name}");
+        }
+    }
+
+    #[test]
     fn the_whiteboard_defence_skill_is_short_may_start_on_its_own_and_answers_from_the_record() {
         let text = embedded()
             .iter()
