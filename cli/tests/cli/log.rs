@@ -36,7 +36,7 @@ fn keep(repo: &Repo, name: &str, age: u64, text: &str) {
 }
 
 /// Unit 5 built, verified, then was sent back and built again.
-fn kept() -> Repo {
+pub fn kept() -> Repo {
     let repo = Repo::new();
     keep(
         &repo,
@@ -64,7 +64,7 @@ fn kept() -> Repo {
     repo
 }
 
-fn log(repo: &Repo, args: &[&str]) -> assert_cmd::assert::Assert {
+pub fn log(repo: &Repo, args: &[&str]) -> assert_cmd::assert::Assert {
     Command::cargo_bin("ns")
         .unwrap()
         .arg("log")
@@ -132,4 +132,72 @@ fn log_changes_nothing() {
         .count();
     assert_eq!(before, after);
     assert!(!repo.path.join(".git/ns/runs.jsonl").exists());
+}
+
+fn lines(out: &str) -> Vec<serde_json::Value> {
+    out.lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn log_json_prints_each_message_as_a_line_with_its_kind_state_and_n() {
+    let out = stdout(log(&kept(), &["5", "--json"]));
+    let got = lines(&out);
+    assert_eq!(got.len(), 9);
+    assert_eq!(
+        got[0],
+        serde_json::json!({"state":"build","n":1,"kind":"text","text":"Building."})
+    );
+    assert_eq!(
+        got[1],
+        serde_json::json!({"state":"build","n":1,"kind":"tool_call","tool":"Bash","input":{"command":"make"}})
+    );
+    assert_eq!(
+        got[2],
+        serde_json::json!({"state":"build","n":1,"kind":"tool_result","text":"made"})
+    );
+    let kinds: Vec<_> = got[3..6]
+        .iter()
+        .map(|l| l["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["text", "tool_call", "tool_result"]);
+    assert_eq!(
+        (got[3]["state"].as_str(), got[3]["n"].as_u64()),
+        (Some("verify"), Some(1))
+    );
+    assert_eq!(
+        (got[8]["state"].as_str(), got[8]["n"].as_u64()),
+        (Some("build"), Some(2))
+    );
+}
+
+#[test]
+fn log_json_state_and_last_pick_the_sessions_the_text_form_does() {
+    let repo = kept();
+    let sessions = |args: &[&str]| -> Vec<(String, u64)> {
+        let mut all: Vec<(String, u64)> = lines(&stdout(log(&repo, args)))
+            .iter()
+            .map(|l| {
+                (
+                    l["state"].as_str().unwrap().to_string(),
+                    l["n"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        all.dedup();
+        all
+    };
+    assert_eq!(
+        sessions(&["5", "--json", "--state", "build"]),
+        [("build".to_string(), 1), ("build".to_string(), 2)]
+    );
+    assert_eq!(
+        sessions(&["5", "--json", "--last"]),
+        [("build".to_string(), 2)]
+    );
+    assert_eq!(
+        sessions(&["5", "--json", "--state", "verify", "--last"]),
+        [("verify".to_string(), 1)]
+    );
 }

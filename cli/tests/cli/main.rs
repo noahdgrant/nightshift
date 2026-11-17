@@ -1,4 +1,4 @@
-mod auto;
+pub mod auto;
 mod check;
 mod common;
 mod config;
@@ -6,10 +6,11 @@ mod define;
 mod doctor;
 mod eval;
 mod eval_replay;
+mod events;
 mod grades;
 mod improve;
 mod init;
-mod log;
+pub mod log;
 pub mod plan;
 pub mod run;
 mod status;

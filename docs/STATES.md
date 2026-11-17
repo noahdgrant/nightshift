@@ -1,5 +1,7 @@
 # States
 
+What `ns run`, `ns auto` and `ns log --json` print is described, event by event and field by field, in [`EVENTS.md`](EVENTS.md).
+
 ## `ns auto`
 
 A unit's `status:` label on the forge says where it is, and only `ns` changes it.

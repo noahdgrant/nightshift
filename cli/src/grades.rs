@@ -1278,6 +1278,9 @@ mod tests {
         fn transcript_render(&self, _: &str) -> String {
             unreachable!()
         }
+        fn transcript_messages(&self, _: &str) -> Vec<crate::harness::Message> {
+            unreachable!()
+        }
         fn transcript_usage(&self, t: &str) -> Usage {
             let n: Vec<u64> = t.split(' ').filter_map(|x| x.parse().ok()).collect();
             Usage {

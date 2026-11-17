@@ -195,6 +195,9 @@ mod tests {
         fn transcript_render(&self, _: &str) -> String {
             unreachable!()
         }
+        fn transcript_messages(&self, _: &str) -> Vec<crate::harness::Message> {
+            unreachable!()
+        }
         fn transcript_usage(&self, _: &str) -> crate::harness::Usage {
             unreachable!()
         }

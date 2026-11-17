@@ -340,7 +340,7 @@ exit {exit}"#,
     format!("{}:{}", bin.display(), std::env::var("PATH").unwrap())
 }
 
-fn run(repo: &Repo, path: &str) -> assert_cmd::assert::Assert {
+pub fn run(repo: &Repo, path: &str) -> assert_cmd::assert::Assert {
     run_with(repo, path, &[])
 }
 
@@ -589,7 +589,7 @@ fn a_bad_ci_timeout_setting_is_an_error_that_names_the_key_and_nothing_runs() {
 }
 
 /// Runs `ns` with exactly `args`.
-fn run_args(repo: &Repo, path: &str, args: &[&str]) -> assert_cmd::assert::Assert {
+pub fn run_args(repo: &Repo, path: &str, args: &[&str]) -> assert_cmd::assert::Assert {
     Command::cargo_bin("ns")
         .unwrap()
         .args(args)
@@ -1623,7 +1623,7 @@ fn failed_checks_send_the_unit_back_to_build_with_their_names() {
     );
 }
 
-fn lines(out: &[u8]) -> Vec<serde_json::Value> {
+pub fn lines(out: &[u8]) -> Vec<serde_json::Value> {
     String::from_utf8_lossy(out)
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
@@ -1690,7 +1690,7 @@ fn a_stuck_unit_resumes_at_the_state_it_stuck_in_with_fresh_attempts() {
 
 /// Sticks unit 5 in build with its work done, then has a person open its change request: the
 /// forge now answers for `ns/5`. Returns the `PATH` of fakes that pass.
-fn stuck_with_person_opened_change_request(repo: &Repo) -> String {
+pub fn stuck_with_person_opened_change_request(repo: &Repo) -> String {
     let broken = Fakes {
         exit: 1,
         ..Fakes::passing()
@@ -1701,7 +1701,7 @@ fn stuck_with_person_opened_change_request(repo: &Repo) -> String {
     path
 }
 
-fn forge_mark(repo: &Repo, name: &str, content: &str) {
+pub fn forge_mark(repo: &Repo, name: &str, content: &str) {
     std::fs::write(repo.path.parent().unwrap().join("bin").join(name), content).unwrap();
 }
 
@@ -2052,7 +2052,7 @@ fn a_finished_unit_is_not_run_again() {
 }
 
 /// Ends a run with the change request open, then marks it as `how` on the forge.
-fn finished_then(repo: &Repo, how: &str) -> String {
+pub fn finished_then(repo: &Repo, how: &str) -> String {
     let path = tools(repo, &Fakes::passing());
     run(repo, &path).success();
     std::fs::write(repo.path.parent().unwrap().join("bin").join(how), "").unwrap();
@@ -2900,7 +2900,7 @@ fn a_unit_stuck_unproven_resumes_at_verify_not_build_though_nothing_changed() {
     assert_eq!(events.last().unwrap()["to"], "done");
 }
 
-const OPEN_BLOCKER: &str = r#"[[{"number":3,"state":"open"}]]"#;
+pub const OPEN_BLOCKER: &str = r#"[[{"number":3,"state":"open"}]]"#;
 const CLOSED_BLOCKER: &str = r#"[[{"number":3,"state":"closed"}]]"#;
 
 #[test]
@@ -3857,7 +3857,7 @@ fn a_bad_merge_setting_is_an_error_that_names_the_key_and_nothing_runs() {
 
 /// Ends a run with the change request open and the base branch published, then moves the base
 /// branch on. Returns the `PATH` and the base's new tip.
-fn open_behind(repo: &Repo, name: &str) -> (String, String) {
+pub fn open_behind(repo: &Repo, name: &str) -> (String, String) {
     counted_check(repo, name == "other.txt-fails");
     main_published(repo);
     let path = tools(repo, &Fakes::passing());
