@@ -13,11 +13,12 @@ use crate::auto::Streak;
 use crate::forge::Forge;
 use crate::harness::Sessions;
 use crate::manifest::Place;
+use crate::notify::{self, Facts, Move as Notice};
 use crate::os::Os;
 use crate::runlog::{Move, Reason, RunLog};
 use crate::state::State;
 use crate::transcripts::Transcripts;
-use crate::{auto, forge, harness, lock, manifest, os, summary, until, vcs, workspace};
+use crate::{auto, config, forge, harness, lock, manifest, os, summary, until, vcs, workspace};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -46,6 +47,8 @@ pub struct Args {
 /// wrong is marked stuck by `ns run`, and the next unit goes on, unless too many in a row went
 /// wrong.
 pub fn run(args: Args) -> Result<()> {
+    // Read first so a bad value stops `ns` before it runs anything.
+    let notify = config::notify()?;
     let here = std::env::current_dir()?;
     let vcs = vcs::get();
     let root = vcs.root_find(&here)?;
@@ -99,6 +102,15 @@ pub fn run(args: Args) -> Result<()> {
         stopped.as_deref(),
         &|unit| log.last_move(&unit.to_string()).ok().flatten(),
     )?;
+    notify::notify(
+        os.as_ref(),
+        &log,
+        notify.as_ref(),
+        Notice::NightEnded,
+        &Facts::Night {
+            summary: &state_dir.join(summary::file_name(night)),
+        },
+    );
     let failed = ran?;
     if let Some(reason) = streak.usage_limit() {
         // Every unit is as it was, so this is a clean stop and not a failure.

@@ -11,6 +11,7 @@ mod grades;
 mod improve;
 mod init;
 pub mod log;
+mod notify;
 pub mod plan;
 pub mod run;
 mod status;

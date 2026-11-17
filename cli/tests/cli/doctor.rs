@@ -249,11 +249,45 @@ fn a_complete_setup_passes_every_check() {
             "protection",
             "workflow",
             "standards",
-            "runner"
+            "runner",
+            "notify"
         ]
     );
     assert_eq!(check(&report, "runner")["detail"], "not installed");
+    assert_eq!(check(&report, "notify")["detail"], "not set");
     assert_eq!(check(&report, "pin")["detail"], env!("CARGO_PKG_VERSION"));
+}
+
+fn notify_set(setup: &Setup, command: &str) {
+    let file = setup.tmp().join("config.toml");
+    let mut text = std::fs::read_to_string(&file).unwrap_or_default();
+    text.push_str(&format!("[notify]\ncommand = \"{command}\"\n"));
+    std::fs::write(file, text).unwrap();
+}
+
+#[test]
+fn a_notify_command_whose_program_exists_passes() {
+    let setup = Setup::new();
+    script(&setup.bin(), "tell-me", "exit 0");
+    notify_set(&setup, "tell-me --loud");
+    let (ok, report) = setup.doctor();
+    assert!(ok, "{report}");
+    assert_eq!(check(&report, "notify")["detail"], "tell-me");
+}
+
+#[test]
+fn a_notify_command_given_as_a_path_that_exists_passes() {
+    let setup = Setup::new();
+    notify_set(&setup, "/bin/sh -c true");
+    let (ok, report) = setup.doctor();
+    assert!(ok, "{report}");
+}
+
+#[test]
+fn a_notify_command_whose_program_is_missing_fails_and_names_it() {
+    let setup = Setup::new();
+    notify_set(&setup, "no-such-notifier --loud");
+    only_fails(&setup, "notify", "no-such-notifier");
 }
 
 #[test]

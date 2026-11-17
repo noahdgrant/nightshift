@@ -32,6 +32,10 @@ stateDiagram
     human --> run : a human runs ns run again
 ```
 
+## Notify
+
+`ns run` runs the command of `[notify]` in the machine's config on three moves of a unit: `stuck` where it sets `status:stuck`, `waiting_for_human` where it sets `status:waiting-for-human` (a gate, or a `done` unit whose change request is still open), and `merged` for a `done` unit whose change request merged. A unit that is resumed does not notify again for a move the run log already holds as `{"unit":..,"notified":<move>}`. The table, the variables and the limits are in the README's "Notify" section.
+
 ## `ns status`
 
 `ns status` says whether `ns` is running a unit right now. `ns run` takes `unit-<n>.lock` in the `ns` state directory and writes its process id and start time into it; `ns auto` runs units through `ns run`, so it does the same. Each unit in the output has `running`, `{"pid":..,"since":..}` while some process holds that lock and `null` otherwise. The operating system's lock decides, not the file: a process killed with SIGKILL leaves the file with its old pid, and the next `ns status` reads `running: null`. A unit labeled `status:in-progress` with `running: null` also has `"stale": true`, a run that died without a trace; no other unit has the key. `ns status` holds a shared lock on the file for an instant and removes no file; `ns run` steps past that instant with a few short tries, so reading never stops a run or keeps one from starting. It does not stop, resume or take over a stale unit; `ns run <unit>` resumes it, and it does not say whether `ns auto` itself is running.

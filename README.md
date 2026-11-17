@@ -183,6 +183,27 @@ model = "opus"
 
 A replay costs subscription time: a build session, which is the cost of a whole `build`, and a grading session. Before it starts, `ns eval replay` prints on stderr how many sessions it will run and an estimate of the tokens, taken from the tokens the grade lines record for each case's unit (all of that unit's sessions, so it is an upper bound), and counts the cases with no recorded usage as unknown. It then asks `Start? [y/N]`; `--yes` skips the question, and without a terminal and without `--yes` it refuses to start. `--max-runs <n>` refuses to start when it would run more than n sessions.
 
+## Notify
+
+`ns` can run a command of yours when a unit needs you, so you need not watch. It is a setting of the machine, in `~/.config/nightshift/config.toml`, and a repository's `.nightshift/nightshift.toml` cannot set it, so a repository cannot make your machine run a command. Edit the file by hand; `ns config` does not write it.
+
+```toml
+[notify]
+command = "notify-send \"$NS_NOTIFY_MOVE: $NS_NOTIFY_TITLE\""
+on = ["stuck", "waiting_for_human", "merged", "night_ended"]
+```
+
+`command` is a command line the shell runs. `on` lists the moves to run it for, and without it all four are. A value of the wrong type, or a move not in this list, is an error, and `ns run` and `ns auto` stop before they do anything.
+
+- `stuck`: a unit got stuck, so a person looks first.
+- `waiting_for_human`: a unit waits for a person, at a gate or with a change request to merge.
+- `merged`: a unit's change request merged.
+- `night_ended`: `ns auto` finished writing its summary, whether by hand or from the runner. A dry run tells nothing.
+
+The command gets the move and its facts in its environment, and never on its command line, so the text of a unit cannot become part of it: `NS_NOTIFY_MOVE`, `NS_NOTIFY_UNIT`, `NS_NOTIFY_TITLE`, `NS_NOTIFY_STATE`, `NS_NOTIFY_REASON` and `NS_NOTIFY_URL` (the change request's address, or the unit's before it has one). `night_ended` has `NS_NOTIFY_SUMMARY`, the path of the summary file, and no unit. Its input and output are discarded.
+
+A command that fails, is missing, or runs more than 30 seconds, when it is killed, never changes what happens to the unit or the night: `ns` writes `{"notify":"failed","reason":..}` to the run log and goes on. A move notifies once for a unit, so resuming it does not tell you again what you were already told; a move it has not made yet still does. With no `[notify]`, nothing runs. `ns doctor` checks that the command's program exists.
+
 ## Credits
 
 Adapted from [mattpocock/skills](https://github.com/mattpocock/skills), [cursor/plugins pstack](https://github.com/cursor/plugins/tree/main/pstack) and [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills). See [`NOTICE.md`](NOTICE.md).

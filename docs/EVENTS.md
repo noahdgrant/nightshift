@@ -12,7 +12,7 @@ A test (`cli/tests/cli/events.rs`) runs the commands through the fakes and compa
 - The types are JSON types. A field is present when its row says nothing else; one that is printed only sometimes says when.
 - `unit` is a string on the events of a run's states and a number on `blocked_by`, on `stopped` and on the events of `ns auto`. That is how it was first printed, and it stays.
 
-The `squash` and `read` entries that `ns run` appends to the run log (`.git/ns/runs.jsonl`) are not printed, so they are not events here.
+The `squash`, `read`, `notified` and `notify` entries that `ns run` and `ns auto` append to the run log (`.git/ns/runs.jsonl`) are not printed, so they are not events here. `notified` and `notify` are described under Notify in the README.
 
 ## `ns run`
 
