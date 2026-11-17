@@ -110,12 +110,27 @@ pub trait Harness {
     /// start of each tool result, in order.
     fn transcript_render(&self, transcript: &str) -> String;
 
+    /// The messages of a saved session transcript, in order: what the agent said, each tool call
+    /// and each tool result, whole.
+    fn transcript_messages(&self, transcript: &str) -> Vec<Message>;
+
     /// The model and the tokens a saved session transcript records.
     fn transcript_usage(&self, transcript: &str) -> Usage;
 
     /// Starts a session the user takes part in, on their terminal, that begins with `prompt`.
     /// Returns when the user ends it, and whether it ended normally.
     fn session_interact(&self, dir: &Path, prompt: &str) -> Result<bool>;
+}
+
+/// One message of a session: what the agent said, a tool it called or what the tool returned.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Message {
+    Text(String),
+    ToolCall {
+        tool: String,
+        input: serde_json::Value,
+    },
+    ToolResult(String),
 }
 
 /// The four token totals of a session, kept apart: they cost differently and are not summed.

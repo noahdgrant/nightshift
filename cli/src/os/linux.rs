@@ -5,6 +5,7 @@ use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -14,6 +15,17 @@ use chrono::{DateTime, Local};
 use super::{systemd, Finished, Installed, Os, Runner, RunnerState};
 
 pub struct Linux;
+
+static CLOCK_READS: AtomicU64 = AtomicU64::new(0);
+
+/// The time now. With `NS_CLOCK_TICK_SECONDS` set, which only a test sets, each read of the clock
+/// reads that many seconds later than the one before, so a test reaches a time of day without
+/// waiting for it.
+fn clock_read(tick: Option<&str>) -> DateTime<Local> {
+    let seconds = tick.and_then(|t| t.parse::<i64>().ok()).unwrap_or(0);
+    let reads = CLOCK_READS.fetch_add(1, Ordering::Relaxed) as i64;
+    Local::now() + chrono::Duration::seconds(seconds * reads)
+}
 
 impl Os for Linux {
     fn process_run(&self, cmd: Command, input: &[u8], timeout: Duration) -> Result<Finished> {
@@ -37,7 +49,7 @@ impl Os for Linux {
     }
 
     fn time_now(&self) -> DateTime<Local> {
-        Local::now()
+        clock_read(std::env::var("NS_CLOCK_TICK_SECONDS").ok().as_deref())
     }
 
     fn sleep(&self, duration: Duration) {
@@ -108,6 +120,16 @@ fn kill_group(pid: u32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_clock_ticks_only_when_a_tick_is_set() {
+        let hours = |tick| (clock_read(tick) - Local::now()).num_hours();
+        assert_eq!(hours(None), 0);
+        assert_eq!(hours(Some("junk")), 0);
+        let first = clock_read(Some("3600"));
+        let second = clock_read(Some("3600"));
+        assert!(second - first >= chrono::Duration::minutes(59));
+    }
+
     use std::process::Stdio;
 
     use super::*;

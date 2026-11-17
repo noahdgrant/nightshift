@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::harness::{Tokens, Usage};
+use crate::harness::{Message, Tokens, Usage};
 
 /// The longest a tool call's input or a tool result is shown.
 const SHORT: usize = 200;
@@ -74,11 +74,10 @@ pub fn usage(raw: &str) -> Usage {
     Usage { model, tokens }
 }
 
-/// The stream as plain text, in order: what the agent said, one line per tool call and the start
-/// of each tool result. A line that is not an event, such as the cut-off end of a killed session,
-/// is skipped.
-pub fn render(raw: &str) -> String {
-    let mut out = String::new();
+/// The stream's messages, in order: what the agent said, each tool call and each tool result. A
+/// line that is not an event, such as the cut-off end of a killed session, is skipped.
+pub fn messages(raw: &str) -> Vec<Message> {
+    let mut out = Vec::new();
     for event in raw
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
@@ -91,19 +90,34 @@ pub fn render(raw: &str) -> String {
                 Some("text") => {
                     let text = block["text"].as_str().unwrap_or_default().trim();
                     if !text.is_empty() {
-                        out.push_str(text);
-                        out.push('\n');
+                        out.push(Message::Text(text.to_string()));
                     }
                 }
-                Some("tool_use") => {
-                    let name = block["name"].as_str().unwrap_or("?");
-                    out.push_str(&format!("> {name}: {}\n", input_short(&block["input"])));
-                }
+                Some("tool_use") => out.push(Message::ToolCall {
+                    tool: block["name"].as_str().unwrap_or("?").to_string(),
+                    input: block["input"].clone(),
+                }),
                 Some("tool_result") => {
-                    out.push_str(&format!("  = {}\n", short(&result_text(&block["content"]))));
+                    out.push(Message::ToolResult(result_text(&block["content"])));
                 }
                 _ => {}
             }
+        }
+    }
+    out
+}
+
+/// The stream as plain text, in order: what the agent said, one line per tool call and the start
+/// of each tool result.
+pub fn render(raw: &str) -> String {
+    let mut out = String::new();
+    for message in messages(raw) {
+        match message {
+            Message::Text(text) => out.push_str(&format!("{text}\n")),
+            Message::ToolCall { tool, input } => {
+                out.push_str(&format!("> {tool}: {}\n", input_short(&input)));
+            }
+            Message::ToolResult(text) => out.push_str(&format!("  = {}\n", short(&text))),
         }
     }
     out

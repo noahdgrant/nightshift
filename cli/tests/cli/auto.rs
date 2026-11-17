@@ -9,7 +9,7 @@ use std::time::Duration;
 use assert_cmd::Command;
 
 /// Runs `ns auto --dry-run` against a fake `gh` that lists `issues` on one page.
-fn dry_run(issues: &str) -> serde_json::Value {
+pub fn dry_run(issues: &str) -> serde_json::Value {
     let repo = Repo::new();
     let bin = repo.path.parent().unwrap().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -27,7 +27,7 @@ fn dry_run(issues: &str) -> serde_json::Value {
     serde_json::from_slice(&out.get_output().stdout).unwrap()
 }
 
-fn unit(number: u64, labels: &[&str], association: &str) -> String {
+pub fn unit(number: u64, labels: &[&str], association: &str) -> String {
     let labels: Vec<_> = labels
         .iter()
         .map(|l| format!(r#"{{"name":"{l}"}}"#))
@@ -65,19 +65,29 @@ const UNTRIAGED: &str = "[]";
 
 /// Runs `ns auto` with `extra` arguments against the fakes of `ns run`, which serve one unit, 5.
 /// Runs `ns auto` with two attempts a state unless `extra` says otherwise.
-fn auto(repo: &Repo, fakes: &Fakes, extra: &[&str]) -> assert_cmd::assert::Assert {
+pub fn auto(repo: &Repo, fakes: &Fakes, extra: &[&str]) -> assert_cmd::assert::Assert {
     auto_by(repo, fakes, extra, None)
 }
 
 /// Like [`auto`], killed after `hang_guard` if it has not ended. The guard is never what a test
 /// checks.
-fn auto_by(
+pub fn auto_by(
     repo: &Repo,
     fakes: &Fakes,
     extra: &[&str],
     hang_guard: Option<Duration>,
 ) -> assert_cmd::assert::Assert {
-    auto_run(repo, fakes, extra, hang_guard, false)
+    auto_run(repo, fakes, extra, hang_guard, false, &[])
+}
+
+/// Like [`auto`], with environment variables set on `ns`.
+pub fn auto_env(
+    repo: &Repo,
+    fakes: &Fakes,
+    extra: &[&str],
+    env: &[(&str, &str)],
+) -> assert_cmd::assert::Assert {
+    auto_run(repo, fakes, extra, None, false, env)
 }
 
 fn auto_run(
@@ -86,6 +96,7 @@ fn auto_run(
     extra: &[&str],
     hang_guard: Option<Duration>,
     attempts_unset: bool,
+    env: &[(&str, &str)],
 ) -> assert_cmd::assert::Assert {
     let path = tools(repo, fakes);
     let mut cmd = Command::cargo_bin("ns").unwrap();
@@ -102,11 +113,12 @@ fn auto_run(
         .env("GIT_AUTHOR_EMAIL", "t@example.com")
         .env("GIT_COMMITTER_NAME", "t")
         .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .envs(env.iter().copied())
         .current_dir(&repo.path)
         .assert()
 }
 
-fn events(out: &assert_cmd::assert::Assert) -> Vec<serde_json::Value> {
+pub fn events(out: &assert_cmd::assert::Assert) -> Vec<serde_json::Value> {
     String::from_utf8(out.get_output().stdout.clone())
         .unwrap()
         .lines()
@@ -362,7 +374,7 @@ fn auto_reports_why_a_change_was_not_merged() {
 }
 
 /// Three ready units, 1 to 3, whose harness always exits non-zero.
-fn three_units_on_a_broken_harness() -> Fakes {
+pub fn three_units_on_a_broken_harness() -> Fakes {
     Fakes {
         exit: 1,
         labels_follow_edits: false,
@@ -477,7 +489,7 @@ fn failing_reviews_of_two_units() -> Fakes {
 fn auto_gives_every_unit_the_setting_of_the_repository() {
     let repo = Repo::new();
     set_manifest(&repo, "[run]\nmax_attempts = 4\n");
-    auto_run(&repo, &failing_reviews_of_two_units(), &[], None, true).failure();
+    auto_run(&repo, &failing_reviews_of_two_units(), &[], None, true, &[]).failure();
     assert_eq!(review_runs(&repo, "1"), 4);
     assert_eq!(review_runs(&repo, "2"), 4);
 }
@@ -485,7 +497,7 @@ fn auto_gives_every_unit_the_setting_of_the_repository() {
 #[test]
 fn auto_with_no_setting_gives_every_unit_three_attempts() {
     let repo = Repo::new();
-    auto_run(&repo, &failing_reviews_of_two_units(), &[], None, true).failure();
+    auto_run(&repo, &failing_reviews_of_two_units(), &[], None, true, &[]).failure();
     assert_eq!(review_runs(&repo, "1"), 3);
     assert_eq!(review_runs(&repo, "2"), 3);
 }
@@ -508,7 +520,7 @@ fn auto_gives_every_unit_the_option_over_the_setting() {
 fn auto_with_a_bad_setting_is_an_error_and_runs_nothing() {
     let repo = Repo::new();
     set_manifest(&repo, "[run]\nmax_attempts = 0\n");
-    let out = auto_run(&repo, &Fakes::passing(), &[], None, true).failure();
+    let out = auto_run(&repo, &Fakes::passing(), &[], None, true, &[]).failure();
     let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
     assert!(err.contains("run.max_attempts"), "{err}");
     assert!(out.get_output().stdout.is_empty());
@@ -519,7 +531,7 @@ fn auto_with_a_bad_review_sessions_setting_is_an_error_and_runs_nothing() {
     for value in ["2", "\"3\""] {
         let repo = Repo::new();
         set_manifest(&repo, &format!("[review]\nsessions = {value}\n"));
-        let out = auto_run(&repo, &Fakes::passing(), &[], None, true).failure();
+        let out = auto_run(&repo, &Fakes::passing(), &[], None, true, &[]).failure();
         let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
         assert!(err.contains("review.sessions"), "{value}: {err}");
         assert!(out.get_output().stdout.is_empty(), "{value}");
@@ -541,7 +553,7 @@ fn auto_with_a_bad_transcript_days_setting_is_an_error_and_runs_nothing() {
     let repo = Repo::new();
     set_manifest(&repo, "[run]\ntranscript_days = -1\n");
     let old = transcript_keep(&repo, "build-1.jsonl", 40);
-    let out = auto_run(&repo, &Fakes::passing(), &[], None, true).failure();
+    let out = auto_run(&repo, &Fakes::passing(), &[], None, true, &[]).failure();
     let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
     assert!(err.contains("run.transcript_days"), "{err}");
     assert!(out.get_output().stdout.is_empty());
@@ -552,7 +564,7 @@ fn auto_with_a_bad_transcript_days_setting_is_an_error_and_runs_nothing() {
 fn auto_with_a_bad_ci_timeout_setting_is_an_error_and_runs_nothing() {
     let repo = Repo::new();
     set_manifest(&repo, "[ship]\nci_timeout_seconds = 0\n");
-    let out = auto_run(&repo, &Fakes::passing(), &[], None, true).failure();
+    let out = auto_run(&repo, &Fakes::passing(), &[], None, true, &[]).failure();
     let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
     assert!(err.contains("ship.ci_timeout_seconds"), "{err}");
     assert!(out.get_output().stdout.is_empty());
@@ -787,7 +799,7 @@ fn the_model_option_of_auto_beats_every_key_for_every_session() {
 fn auto_with_a_bad_model_table_is_an_error_and_runs_nothing() {
     let repo = Repo::new();
     set_manifest(&repo, "[model]\nbuild = 7\n");
-    let out = auto_run(&repo, &Fakes::passing(), &[], None, true).failure();
+    let out = auto_run(&repo, &Fakes::passing(), &[], None, true, &[]).failure();
     assert!(stderr(&out).contains("model.build"));
     assert!(out.get_output().stdout.is_empty());
 }

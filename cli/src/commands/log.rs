@@ -1,6 +1,9 @@
 use anyhow::{bail, Result};
 use clap::Args as ClapArgs;
 
+use serde_json::json;
+
+use crate::harness::Message;
 use crate::state::State;
 use crate::transcripts::{self, Transcripts};
 use crate::{harness, vcs};
@@ -15,6 +18,9 @@ pub struct Args {
     /// Show only the most recent session.
     #[arg(long)]
     last: bool,
+    /// Print each message as one JSON line, with the session's state and number.
+    #[arg(long)]
+    json: bool,
 }
 
 /// Prints what each harness session of the unit said and ran, oldest first. Changes nothing.
@@ -33,6 +39,28 @@ pub fn run(args: Args) -> Result<()> {
     let harness = harness::get();
     for session in sessions {
         let raw = std::fs::read(&session.path)?;
+        if args.json {
+            for message in harness.transcript_messages(&String::from_utf8_lossy(&raw)) {
+                let mut line = json!({ "state": session.state.to_string(), "n": session.n });
+                match message {
+                    Message::Text(text) => {
+                        line["kind"] = "text".into();
+                        line["text"] = text.into();
+                    }
+                    Message::ToolCall { tool, input } => {
+                        line["kind"] = "tool_call".into();
+                        line["tool"] = tool.into();
+                        line["input"] = input;
+                    }
+                    Message::ToolResult(text) => {
+                        line["kind"] = "tool_result".into();
+                        line["text"] = text.into();
+                    }
+                }
+                println!("{line}");
+            }
+            continue;
+        }
         println!(
             "== {} {} ({}) ==\n{}",
             session.state,

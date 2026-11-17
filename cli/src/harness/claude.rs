@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use chrono::{Local, TimeZone};
 
-use super::{Harness, Reply, Task, TimedOut, Usage, UsageLimit};
+use super::{Harness, Message, Reply, Task, TimedOut, Usage, UsageLimit};
 use crate::os::Os;
 use crate::retry;
 
@@ -221,6 +221,10 @@ impl Harness for Claude {
 
     fn transcript_render(&self, raw: &str) -> String {
         transcript::render(raw)
+    }
+
+    fn transcript_messages(&self, raw: &str) -> Vec<Message> {
+        transcript::messages(raw)
     }
 
     fn transcript_usage(&self, raw: &str) -> Usage {
