@@ -30,6 +30,10 @@ stateDiagram
     human --> run : a human runs ns run again
 ```
 
+## `ns status`
+
+`ns status` says whether `ns` is running a unit right now. `ns run` takes `unit-<n>.lock` in the `ns` state directory and writes its process id and start time into it; `ns auto` runs units through `ns run`, so it does the same. Each unit in the output has `running`, `{"pid":..,"since":..}` while some process holds that lock and `null` otherwise. The operating system's lock decides, not the file: a process killed with SIGKILL leaves the file with its old pid, and the next `ns status` reads `running: null`. A unit labeled `status:in-progress` with `running: null` also has `"stale": true`, a run that died without a trace; no other unit has the key. `ns status` holds a shared lock on the file for an instant and removes no file; `ns run` steps past that instant with a few short tries, so reading never stops a run or keeps one from starting. It does not stop, resume or take over a stale unit; `ns run <unit>` resumes it, and it does not say whether `ns auto` itself is running.
+
 ## `ns run`
 
 The table in `cli/src/state.rs` is the source of truth.

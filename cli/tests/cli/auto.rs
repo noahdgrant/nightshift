@@ -818,3 +818,60 @@ fn auto_leaves_an_open_change_request_alone_however_far_behind_its_base_is() {
     assert_eq!(check_runs(&repo), 1);
     assert_eq!(gh_log(&repo).matches("pr checks").count(), looks);
 }
+
+#[test]
+fn status_names_the_ns_auto_process_as_the_one_running_its_unit() {
+    let repo = Repo::new();
+    let path = tools(&repo, &Fakes::passing());
+    let bin = repo.path.parent().unwrap().join("bin");
+    // The first harness session waits for the test; the rest run the generated fake.
+    std::fs::rename(bin.join("claude"), bin.join("claude.real")).unwrap();
+    crate::common::script(
+        &bin,
+        "claude",
+        &format!(
+            r#"p="$(cat)"
+if [ ! -e "{b}/started" ]; then touch "{b}/started"; while [ ! -e "{b}/release" ]; do sleep 0.05; done; fi
+printf %s "$p" | "{b}/claude.real" "$@""#,
+            b = bin.display()
+        ),
+    );
+    let mut auto = std::process::Command::new(assert_cmd::cargo::cargo_bin("ns"))
+        .args(["auto", "--ci-poll-seconds", "0", "--max-attempts", "2"])
+        .env("PATH", &path)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .current_dir(&repo.path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    // A hang guard, not the thing the test checks: the harness has blocked once `started` exists.
+    for _ in 0..600 {
+        if bin.join("started").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(bin.join("started").exists(), "the harness never started");
+    let read = || -> serde_json::Value {
+        let out = Command::cargo_bin("ns")
+            .unwrap()
+            .arg("status")
+            .env("PATH", &path)
+            .current_dir(&repo.path)
+            .output()
+            .unwrap();
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let during = read();
+    assert!(repo.path.join(".git/ns/auto.lock").exists());
+    std::fs::write(bin.join("release"), "").unwrap();
+    auto.wait().unwrap();
+    let after = read();
+    assert_eq!(during["units"].as_array().unwrap().len(), 1);
+    assert_eq!(during["units"][0]["running"]["pid"], auto.id());
+    assert_eq!(after["units"][0]["running"], serde_json::Value::Null);
+}

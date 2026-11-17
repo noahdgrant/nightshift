@@ -6,7 +6,7 @@ use crate::forge::{ChangeState, Forge, Unit};
 use crate::runlog::RunLog;
 use crate::states::ship;
 use crate::vcs::Vcs;
-use crate::{auto, forge, manifest, vcs, workspace};
+use crate::{auto, forge, lock, manifest, status, vcs, workspace};
 
 #[derive(ClapArgs)]
 pub struct Args {}
@@ -62,12 +62,23 @@ fn unit_describe(
             Some(described)
         }
     };
-    Ok(json!({
+    let running = lock::lock_holder(&vcs.state_dir_find(root)?, &format!("unit-{id}.lock"));
+    let label = unit
+        .labels
+        .iter()
+        .find(|l| l.starts_with(auto::STATE_PREFIX));
+    let mut described = json!({
         "unit": unit.number,
         "title": unit.title,
-        "status": unit.labels.iter().find(|l| l.starts_with(auto::STATE_PREFIX)),
+        "status": label,
         "state": last.as_ref().map(|m| m.to.to_string()),
         "moved_at": last.and_then(|m| m.at),
         "change_request": change_request,
-    }))
+        "running": running.as_ref().map(|h| json!({ "pid": h.pid, "since": h.since })),
+    });
+    // In progress with no process running it: a run that died without a trace.
+    if running.is_none() && label.is_some_and(|s| s == status::IN_PROGRESS) {
+        described["stale"] = true.into();
+    }
+    Ok(described)
 }
