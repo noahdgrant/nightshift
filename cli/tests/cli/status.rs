@@ -80,7 +80,7 @@ fn a_unit_that_never_ran_has_no_state_and_no_change_request() {
         out,
         json!({"units": [{
             "unit": 3, "title": "unit 3", "status": "status:ready-for-agent",
-            "state": null, "moved_at": null, "change_request": null,
+            "state": null, "moved_at": null, "change_request": null, "running": null,
         }]})
     );
 }
@@ -112,6 +112,7 @@ fn a_done_unit_shows_its_last_move_and_its_open_change_request() {
             "unit": 7, "title": "unit 7", "status": "status:waiting-for-human",
             "state": "done", "moved_at": 200,
             "change_request": {"url": "https://forge.example/7", "state": "open"},
+            "running": null,
         })
     );
 }
@@ -276,4 +277,102 @@ fn a_merged_change_request_shows_no_base() {
     let out = run_status_in(&repo, &[unit(7, &[])], &[(7, "MERGED")], "").success();
     let json: Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
     assert_eq!(json["units"][0]["change_request"]["base"], Value::Null);
+}
+
+/// Holds `unit-<n>.lock` in the repository's `ns` state directory the way `ns run` does.
+fn lock_held(repo: &Repo, unit: u64, record: &str) -> std::fs::File {
+    let dir = repo.path.join(".git/ns");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = std::fs::File::create(dir.join(format!("unit-{unit}.lock"))).unwrap();
+    file.lock().unwrap();
+    std::fs::write(dir.join(format!("unit-{unit}.lock")), record).unwrap();
+    file
+}
+
+fn status_in(repo: &Repo, issues: &[String]) -> Value {
+    let out = run_status_in(repo, issues, &[], "").success();
+    serde_json::from_slice(&out.get_output().stdout).unwrap()
+}
+
+#[test]
+fn a_unit_whose_lock_is_held_shows_its_holder_and_another_shows_null() {
+    let repo = Repo::new();
+    let _held = lock_held(&repo, 3, "4242 1700000000\n");
+    let out = status_in(&repo, &[unit(3, &[]), unit(4, &[])]);
+    assert_eq!(
+        out["units"][0]["running"],
+        json!({"pid": 4242, "since": 1700000000})
+    );
+    assert_eq!(out["units"][1]["running"], Value::Null);
+}
+
+#[test]
+fn a_lock_file_left_by_a_process_killed_with_sigkill_reads_as_not_running() {
+    let repo = Repo::new();
+    let dir = repo.path.join(".git/ns");
+    std::fs::create_dir_all(&dir).unwrap();
+    let lock = dir.join("unit-3.lock");
+    // Takes the lock, records itself, then waits; `exec` keeps one process, so SIGKILL ends it.
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(r#"exec 9>"$1"; flock 9; echo "$$ 1700000000" >&9; echo ready; exec sleep 60"#)
+        .arg("sh")
+        .arg(&lock)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut ready = String::new();
+    std::io::BufRead::read_line(
+        &mut std::io::BufReader::new(child.stdout.take().unwrap()),
+        &mut ready,
+    )
+    .unwrap();
+    let alive = status_in(&repo, &[unit(3, &[])]);
+    assert_eq!(
+        alive["units"][0]["running"],
+        json!({"pid": child.id(), "since": 1700000000})
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let dead = status_in(&repo, &[unit(3, &[])]);
+    assert_eq!(dead["units"][0]["running"], Value::Null);
+    assert!(lock.exists(), "reading status removes nothing");
+}
+
+#[test]
+fn an_in_progress_unit_nobody_runs_is_stale() {
+    let out = status(&[unit(3, &["status:in-progress"])], &[], "");
+    assert_eq!(
+        out["units"][0],
+        json!({
+            "unit": 3, "title": "unit 3", "status": "status:in-progress",
+            "state": null, "moved_at": null, "change_request": null,
+            "running": null, "stale": true,
+        })
+    );
+}
+
+#[test]
+fn an_in_progress_unit_that_is_run_is_not_stale() {
+    let repo = Repo::new();
+    let _held = lock_held(&repo, 3, "4242 1700000000\n");
+    let out = status_in(&repo, &[unit(3, &["status:in-progress"])]);
+    assert_eq!(out["units"][0]["running"]["pid"], 4242);
+    assert!(out["units"][0].get("stale").is_none());
+}
+
+#[test]
+fn a_unit_not_in_progress_is_never_stale() {
+    let out = status(
+        &[
+            unit(1, &["status:ready-for-agent"]),
+            unit(2, &["status:stuck"]),
+            unit(3, &[]),
+        ],
+        &[],
+        "",
+    );
+    for unit in out["units"].as_array().unwrap() {
+        assert!(unit.get("stale").is_none(), "{unit}");
+    }
 }
