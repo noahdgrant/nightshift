@@ -10,12 +10,13 @@ use serde_json::{json, Value};
 use crate::artifact;
 use crate::forge::ChangeState;
 use crate::manifest::Place;
+use crate::notify::{self, Facts, Move as Notice, Settings};
 use crate::runlog::{Move, Reason, Resume, RunLog};
 use crate::state::{Outcome, State};
 use crate::states::ship::Refresh;
 use crate::states::{self, clean_up, ship, Context, BUILT_SNAPSHOT};
 use crate::transcripts::Transcripts;
-use crate::{auto, forge, harness, lock, manifest, os, status, vcs, workspace};
+use crate::{auto, config, forge, harness, lock, manifest, os, status, vcs, workspace};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -101,6 +102,8 @@ pub enum Gates {
 /// Walks the unit through its states, from where it last stopped.
 pub fn run(args: Args) -> Result<()> {
     let unit = args.unit.to_string();
+    // Read first so a bad value stops `ns` before it runs anything.
+    let notify = config::notify()?;
     let from = std::env::current_dir()?;
     let vcs = vcs::get();
     let root = vcs.root_find(&from)?;
@@ -272,8 +275,14 @@ pub fn run(args: Args) -> Result<()> {
             eprintln!("ns: cannot say what verification left unproven: {e:#}");
         }
     }
+    let told = Told {
+        ctx: &ctx,
+        log: &log,
+        root: &root,
+        settings: notify.as_ref(),
+    };
     let status = if matches!(ended, Ok(State::Done)) {
-        finished_status_set(&ctx, &root, &unit)
+        finished_status_set(&told, &unit)
     } else {
         // Stuck, or gone wrong, is a unit a person looks at first; waiting at a gate is only
         // waiting for a person to go on.
@@ -282,7 +291,20 @@ pub fn run(args: Args) -> Result<()> {
         } else {
             status::WAITING_FOR_HUMAN
         };
-        status::unit_status_set(ctx.forge.as_ref(), &root, args.unit, label)
+        let set = status::unit_status_set(ctx.forge.as_ref(), &root, args.unit, label);
+        match &ended {
+            Err(_) => {
+                let reason = log
+                    .last_move(&unit)
+                    .ok()
+                    .flatten()
+                    .and_then(|m| m.reason)
+                    .map_or("", Reason::name);
+                told.tell(Notice::Stuck, "stuck", reason);
+            }
+            Ok(state) => told.tell(Notice::WaitingForHuman, &state.to_string(), "gate"),
+        }
+        set
     };
     match (ended, status) {
         (Err(e), Err(s)) => {
@@ -511,24 +533,67 @@ fn sent_back(ctx: &Context, log: &RunLog, unit: &str) -> Result<()> {
     Ok(())
 }
 
+/// What `ns run` needs to tell a person about the unit it runs.
+struct Told<'a> {
+    ctx: &'a Context,
+    log: &'a RunLog,
+    root: &'a Path,
+    settings: Option<&'a Settings>,
+}
+
+impl Told<'_> {
+    /// Runs the notify command for `mv`, with the unit's title and the address of its change
+    /// request, or of the unit before it has one. Skips the forge when nothing would run.
+    fn tell(&self, mv: Notice, state: &str, reason: &str) {
+        if !self.settings.is_some_and(|s| s.on.contains(&mv)) {
+            return;
+        }
+        let ctx = self.ctx;
+        let unit = match ctx.forge.unit_get(self.root, ctx.unit) {
+            Ok(unit) => unit,
+            Err(e) => return eprintln!("ns: cannot tell about unit {}: {e:#}", ctx.unit),
+        };
+        let branch = workspace::locate(self.root, &ctx.unit.to_string()).map(|w| w.branch);
+        let url = match branch.map(|b| ctx.forge.change_request_get(self.root, &b)) {
+            Ok(Ok(Some(cr))) => cr.url,
+            _ => unit.url,
+        };
+        let facts = Facts::Unit {
+            unit: ctx.unit,
+            title: &unit.title,
+            state,
+            reason,
+            url: &url,
+        };
+        notify::notify(ctx.os.as_ref(), self.log, self.settings, mv, &facts);
+    }
+}
+
 /// Sets the status of a unit whose states are all done: none when its change request merged,
-/// otherwise it is ready to merge and waits for a person.
-fn finished_status_set(ctx: &Context, root: &Path, unit: &str) -> Result<()> {
-    let branch = workspace::locate(root, unit)?.branch;
+/// otherwise it is ready to merge and waits for a person. Tells the person either way.
+fn finished_status_set(told: &Told, unit: &str) -> Result<()> {
+    let ctx = told.ctx;
+    let branch = workspace::locate(told.root, unit)?.branch;
     let merged = matches!(
-        ctx.forge.change_request_get(root, &branch)?,
+        ctx.forge.change_request_get(told.root, &branch)?,
         Some(cr) if cr.state == ChangeState::Merged
     );
-    if merged {
-        status::unit_status_clear(ctx.forge.as_ref(), root, ctx.unit)
+    let set = if merged {
+        status::unit_status_clear(ctx.forge.as_ref(), told.root, ctx.unit)
     } else {
         status::unit_status_set(
             ctx.forge.as_ref(),
-            root,
+            told.root,
             ctx.unit,
             status::WAITING_FOR_HUMAN,
         )
+    };
+    if merged {
+        told.tell(Notice::Merged, "done", "");
+    } else {
+        told.tell(Notice::WaitingForHuman, "done", "merge");
     }
+    set
 }
 
 /// Moves the unit from `start` to `done`, or to `stuck` when a state would run more than

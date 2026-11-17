@@ -7,7 +7,7 @@ use serde_json::json;
 use crate::commands::init::{CLOSES_UNIT_CHECK, CLOSES_UNIT_PATH};
 use crate::forge::Forge;
 use crate::os::RunnerState;
-use crate::{checks, forge, harness, labels, manifest, skill, status, vcs};
+use crate::{checks, config, forge, harness, labels, manifest, skill, status, vcs};
 
 #[derive(ClapArgs)]
 pub struct Args {}
@@ -49,6 +49,7 @@ pub fn run(_args: Args) -> Result<()> {
         workflow(&root),
         standards(&root),
         runner(&root),
+        notify(),
     ];
     let ok = results.iter().all(|c| c.ok);
     let list: Vec<_> = results
@@ -60,6 +61,32 @@ pub fn run(_args: Args) -> Result<()> {
         bail!("the setup has problems; each failed check says how to fix it");
     }
     Ok(())
+}
+
+/// With `[notify]` set, the program its command starts must exist.
+fn notify() -> Check {
+    let settings = match config::notify() {
+        Ok(Some(settings)) => settings,
+        Ok(None) => return pass("notify", "not set"),
+        Err(e) => return fail("notify", format!("{e:#}")),
+    };
+    let Some(program) = settings.command.split_whitespace().next() else {
+        return fail("notify", "`notify.command` names no program");
+    };
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let found = if program.contains('/') {
+        Path::new(program).exists()
+    } else {
+        std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
+    };
+    if found {
+        pass("notify", program)
+    } else {
+        fail(
+            "notify",
+            format!("`notify.command` runs {program}, which is not found; install it or fix the command"),
+        )
+    }
 }
 
 /// A runner that is installed must match the settings and this `ns`; one that is not installed is

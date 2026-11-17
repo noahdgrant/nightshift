@@ -98,6 +98,12 @@ impl RunLog {
         })
     }
 
+    /// The log kept in `path`.
+    #[cfg(test)]
+    pub fn at(path: PathBuf) -> RunLog {
+        RunLog { path }
+    }
+
     /// A JSON-lines file named `name` in the same state directory, appended to like the run log.
     pub fn sibling_open(vcs: &dyn Vcs, root: &Path, name: &str) -> Result<RunLog> {
         Ok(RunLog {
@@ -132,6 +138,19 @@ impl RunLog {
         self.append(&serde_json::json!({
             "unit": unit, "state": "build", "squash": result, "commits": commits
         }))
+    }
+
+    /// Notes that the person was told `mv` about the unit.
+    pub fn notified_append(&self, unit: &str, mv: &str) -> Result<()> {
+        self.append(&serde_json::json!({ "unit": unit, "notified": mv }))
+    }
+
+    /// Whether the person was already told `mv` about the unit.
+    pub fn notified(&self, unit: &str, mv: &str) -> Result<bool> {
+        Ok(self
+            .events()?
+            .iter()
+            .any(|e| e["unit"] == unit && e["notified"] == mv))
     }
 
     /// The base branch commit the unit's change request was last refreshed against, if ever.

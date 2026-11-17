@@ -17,6 +17,7 @@ mod lock;
 mod manifest;
 mod markers;
 mod merge;
+mod notify;
 mod os;
 mod plan;
 mod retry;
