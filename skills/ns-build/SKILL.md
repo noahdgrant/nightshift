@@ -31,6 +31,8 @@ When the unit adds or changes a CI pipeline, apply `ns-ci-design`.
 
 When the unit adds a module, a dependency, a boundary to a tool or service, or a pattern the repository has no example of, apply `ns-architecture-design`.
 
+When the unit adds or changes a command, a flag, an output format, an exit code or help text of a command-line tool, apply `ns-cli-design`.
+
 Done when every requirement has a passing test.
 
 ## 3. Run the checks
