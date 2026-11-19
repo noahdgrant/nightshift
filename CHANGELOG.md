@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.9.0](https://github.com/noahdgrant/nightshift/compare/v0.8.1...v0.9.0) (2026-11-19)
+
+
+### Features
+
+* **cli:** a move's event says what the state produced ([#1078](https://github.com/noahdgrant/nightshift/issues/1078)) ([4f156af](https://github.com/noahdgrant/nightshift/commit/4f156af90ce301b32976d792115a48d4f7a5b395))
+* **cli:** ns prints progress inside a state, so a parent session can tell a working harness from a hung one ([#1079](https://github.com/noahdgrant/nightshift/issues/1079)) ([07d4dbb](https://github.com/noahdgrant/nightshift/commit/07d4dbb069fecb6ad238210202ad40dd8a2f96ed))
+* **cli:** ns runs a command when a unit is stuck, waits for a human or merges ([#1076](https://github.com/noahdgrant/nightshift/issues/1076)) ([1b3b168](https://github.com/noahdgrant/nightshift/commit/1b3b1680b5200b11b4103c9eb3c44d3093ed85a9))
+* **cli:** ns status &lt;unit&gt; shows why a unit stopped, its attempt, its checks and what a person must do ([#1073](https://github.com/noahdgrant/nightshift/issues/1073)) ([1e0a2f0](https://github.com/noahdgrant/nightshift/commit/1e0a2f04488414dcaa5e0b5487e997a8ef11514c))
+* **cli:** ns status says whether a unit is being run right now ([#1072](https://github.com/noahdgrant/nightshift/issues/1072)) ([ef6ea26](https://github.com/noahdgrant/nightshift/commit/ef6ea26b46bc67655e157b94992cc1b13fd59879))
+* **cli:** the tokens of a unit and a night are visible while they run ([#1080](https://github.com/noahdgrant/nightshift/issues/1080)) ([09a3685](https://github.com/noahdgrant/nightshift/commit/09a36851c4c02cdab124d05b0fcd3011499d02fd))
+* **skills:** a cli-design skill ([#1070](https://github.com/noahdgrant/nightshift/issues/1070)) ([b3a35ff](https://github.com/noahdgrant/nightshift/commit/b3a35ffb24d45405ad5ba892cc2a9fd793b65717))
+* **skills:** a skill for the session that drives ns ([#1074](https://github.com/noahdgrant/nightshift/issues/1074)) ([1495a1a](https://github.com/noahdgrant/nightshift/commit/1495a1ad079e6a7896a27b8fded75733325de933))
+* **skills:** an architecture-design skill ([#1065](https://github.com/noahdgrant/nightshift/issues/1065)) ([e242dff](https://github.com/noahdgrant/nightshift/commit/e242dff8509f42cf9c67bee744440ec01183a0ab))
+* **skills:** an ns-supervise skill for the session that drives ns ([1495a1a](https://github.com/noahdgrant/nightshift/commit/1495a1ad079e6a7896a27b8fded75733325de933))
+
+
+### Documentation
+
+* **cli:** document the events ns prints as a contract, and give ns log a --json ([#1075](https://github.com/noahdgrant/nightshift/issues/1075)) ([27a3c46](https://github.com/noahdgrant/nightshift/commit/27a3c4680828ea91e756a1a68fdab07167c5ea69))
+* **skills:** ns-tdd says tests do not depend on each other or on timing ([#1086](https://github.com/noahdgrant/nightshift/issues/1086)) ([58bd818](https://github.com/noahdgrant/nightshift/commit/58bd818369260501ef857766813edd7055d25f70))
+
 ## [0.8.1](https://github.com/noahdgrant/nightshift/compare/v0.8.0...v0.8.1) (2026-11-11)
 
 
