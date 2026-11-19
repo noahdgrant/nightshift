@@ -28,4 +28,9 @@ The **seam** is the public boundary a test sits at. Before the first test, write
 - **Tautological**: the expected value is computed the way the code computes it, so the test passes by construction. Take expected values from a literal, a worked example or the spec.
 - **Horizontal slicing**: all tests first, then all code. Bulk tests describe imagined behavior. Work in vertical slices.
 
-Mock only at system boundaries: network, disk, clock, hardware. Tests share no mutable state and no order.
+Mock only at system boundaries: network, disk, clock, hardware.
+
+## Independent and deterministic
+
+- **No dependence on each other.** Tests share no mutable state and no order. Each one sets up what it needs and passes alone, in any order, in parallel.
+- **No dependence on timing.** A test never sleeps to wait for something to finish and never races real time. Fake the clock, or wait on the event itself, so the result is the same on a slow machine and a fast one.
